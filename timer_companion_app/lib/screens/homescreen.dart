@@ -14,6 +14,7 @@ class _HomescreenState extends State<Homescreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Color.fromARGB(255, 255, 254, 219),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -142,14 +143,18 @@ class _HomescreenState extends State<Homescreen> {
               padding: const EdgeInsets.fromLTRB(0, 0, 0, 20),
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
+                  side: BorderSide(color: Colors.black, width: 1),
                   minimumSize: const Size(200, 50),
-                  backgroundColor: const Color.fromARGB(255, 162, 255, 165),
+                  backgroundColor: const Color.fromARGB(255, 39, 60, 222),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
                 onPressed: () {},
-                child: Text('Connect'),
+                child: Text(
+                  'Connect',
+                  style: GoogleFonts.bungee(fontSize: 20, color: Colors.white),
+                ),
               ),
             ),
           ],
