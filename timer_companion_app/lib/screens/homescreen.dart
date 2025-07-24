@@ -14,7 +14,7 @@ class _HomescreenState extends State<Homescreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Color.fromARGB(255, 255, 254, 219),
+      backgroundColor: Color.fromARGB(255, 27, 27, 27),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -26,19 +26,22 @@ class _HomescreenState extends State<Homescreen> {
               child: Column(
                 children: [
                   Container(
-                    color: const Color.fromARGB(255, 33, 93, 243),
+                    color: const Color.fromARGB(255, 12, 35, 122),
                     height: SizeConfig.vertical! * 12.5,
                     width: double.infinity,
                   ),
                   Container(
-                    color: const Color.fromARGB(255, 140, 176, 255),
+                    color: const Color.fromARGB(214, 85, 164, 255),
                     height: SizeConfig.vertical! * 12.5,
                     width: double.infinity,
                     child: Center(
                       child: Text(
                         "Active Timers",
                         textAlign: TextAlign.center,
-                        style: GoogleFonts.racingSansOne(fontSize: 30),
+                        style: GoogleFonts.racingSansOne(
+                          fontSize: 30,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -52,7 +55,7 @@ class _HomescreenState extends State<Homescreen> {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
-                color: const Color.fromARGB(255, 59, 75, 255),
+                color: const Color.fromARGB(115, 59, 85, 255),
                 // child: Row(
                 //   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 //   crossAxisAlignment: CrossAxisAlignment.center,
@@ -79,7 +82,7 @@ class _HomescreenState extends State<Homescreen> {
                         RangePointer(
                           value: 50,
                           width: 0.2,
-                          color: Colors.green,
+                          color: const Color.fromARGB(255, 255, 255, 255),
                         ),
                       ],
                       annotations: <GaugeAnnotation>[
@@ -113,7 +116,7 @@ class _HomescreenState extends State<Homescreen> {
                           endValue: 100,
                           gradient: const SweepGradient(
                             colors: <Color>[
-                              Color.fromARGB(255, 234, 255, 0),
+                              Color.fromARGB(255, 0, 153, 255),
                               Color.fromARGB(255, 233, 250, 255),
                             ],
                             stops: <double>[0.0, 1.0],
@@ -143,9 +146,12 @@ class _HomescreenState extends State<Homescreen> {
               padding: const EdgeInsets.fromLTRB(0, 0, 0, 20),
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  side: BorderSide(color: Colors.black, width: 1),
+                  side: BorderSide(
+                    color: const Color.fromARGB(112, 0, 30, 94),
+                    width: 3.5,
+                  ),
                   minimumSize: const Size(200, 50),
-                  backgroundColor: const Color.fromARGB(255, 39, 60, 222),
+                  backgroundColor: const Color.fromARGB(255, 60, 131, 218),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
