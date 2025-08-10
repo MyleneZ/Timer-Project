@@ -24,3 +24,24 @@ SFX List
 - cancel ping
 - bootup sound
 - confirm ping (e.g. when a timer is set)
+
+
+
+Arduino IDE Libraries (install via Tools -> Manage Libraries...)
+- LovyanGFX (for the display); alternative is Arduino_GFX
+- NimBLE-Arduino (BLE capabilities)
+- ArduinoJson (sending data to flutter)
+
+https://learn.adafruit.com/adafruit-qualia-esp32-s3-for-rgb666-displays/arduino-ide-setup
+
+/private/var/folders/j1/441zhjvd7vq9fncs7y4vlbrh0000gn/T/.arduinoIDE-unsaved202579-22963-61i3ie.zqnz6/BareMinimum/BareMinimum.ino: In function 'void setup()':
+/private/var/folders/j1/441zhjvd7vq9fncs7y4vlbrh0000gn/T/.arduinoIDE-unsaved202579-22963-61i3ie.zqnz6/BareMinimum/BareMinimum.ino:4:11: error: 'LED_BUILTIN' was not declared in this scope
+    4 |   pinMode(LED_BUILTIN, OUTPUT);
+      |           ^~~~~~~~~~~
+/private/var/folders/j1/441zhjvd7vq9fncs7y4vlbrh0000gn/T/.arduinoIDE-unsaved202579-22963-61i3ie.zqnz6/BareMinimum/BareMinimum.ino: In function 'void loop()':
+/private/var/folders/j1/441zhjvd7vq9fncs7y4vlbrh0000gn/T/.arduinoIDE-unsaved202579-22963-61i3ie.zqnz6/BareMinimum/BareMinimum.ino:11:16: error: 'LED_BUILTIN' was not declared in this scope
+   11 |   digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
+      |                ^~~~~~~~~~~
+exit status 1
+
+Compilation error: 'LED_BUILTIN' was not declared in this scope
