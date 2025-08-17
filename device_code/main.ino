@@ -27,16 +27,16 @@ const int VU_W = 44;
 const int UI_RIGHT_H = 140;
 const int UI_RIGHT_Y = 320 - UI_RIGHT_H;
 
-const int RING_SZ = 96;                      // smaller = faster (96x96 ≈ 18 KB buffer)
-const int RING_RO = 42;                      // outer radius   (<= RING_SZ/2 - margin)
-const int RING_RI = 30;                      // inner radius
-const int RING_CY = UI_RIGHT_Y + UI_RIGHT_H/2;
-const int RING_CX = 480;
+const int RING_SZ = 192;                      // smaller = faster (96x96 ≈ 18 KB buffer)
+const int RING_RO = 96;                      // outer radius   (<= RING_SZ/2 - margin)
+const int RING_RI = 72;                      // inner radius
+const int RING_CY = 160;
+const int RING_CX = 650; // TODO: we went from 720 to 650, adjust the text
 const int RING_X  = RING_CX - RING_SZ/2;     // on-screen placement
 const int RING_Y  = RING_CY - RING_SZ/2;
 
-const int TXT_Y = UI_RIGHT_Y + 16;
-const int TXT_X = RING_CX - RING_RO - 32;    // baseline for size=2 text
+const int TXT_Y = UI_RIGHT_Y - 64;
+const int TXT_X = RING_CX - RING_RO - 512;    // baseline for size=2 text
 // ------------------------
 
 // ------- Countdown -------
@@ -67,11 +67,18 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
 );
 
 // ---------- Helpers ----------
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+static inline uint16_t hex565(uint32_t rgb) {     // 0xRRGGBB
+  return rgb565((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+}
+
 static void draw_grid_left(uint16_t color, int dx, int dy) {
   for (int x = 0; x < UI_RIGHT_Y; x += dx) gfx->drawFastVLine(x, 0, gfx->height(), color);
   for (int y = 0; y < gfx->height(); y += dy) gfx->drawFastHLine(0, y, UI_RIGHT_Y, color);
 }
-static void fmt_mmss(uint32_t sec, char *out) {
+static void fmt_hhmmss(uint32_t sec, char *out) {
   uint32_t m = sec / 60, s = sec % 60;
   uint32_t h = m / 60;
   m = m % 60;
@@ -104,7 +111,8 @@ static void i2s_init() {
 // ---------- Timer state ----------
 static uint32_t countdown_left = COUNTDOWN_SECONDS;
 static uint32_t last_second_ms = 0;
-static char last_text[6] = "-----";
+static char last_text[9] = "--------";
+static char last_name[16] = "---------------";
 // ---------------------------------
 
 // ---------- Ring LUT + buffer (no Arduino_Canvas!) ----------
@@ -154,7 +162,8 @@ static void draw_ring(float fracRemaining) {
 
   for (int i = 0; i < RING_SZ * RING_SZ; i++) {
     if (!maskLUT[i]) {
-      ringbuf[i] = BLACK;                 // outside the donut
+      ringbuf[i] = hex565(0x14215E);                 // outside the donut
+      // ringbuf[i] = BLACK; // debug only
     } else {
       ringbuf[i] = (angleLUT[i] >= cut) ? FG : BG;
     }
@@ -175,7 +184,7 @@ void setup() {
   expander->digitalWrite(PCA_TFT_BACKLIGHT, HIGH);
 
   // Static background (left only)
-  gfx->fillScreen(BLUE); // TODO: replace with 14215E
+  gfx->fillScreen(hex565(0x14215E)); // TODO: replace with 14215E
 //   const uint16_t cols[] = { RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA, WHITE };
 //   int bh = gfx->height() / 7;
 //   for (int i = 0; i < 7; i++) gfx->fillRect(0, i*bh, UI_RIGHT_Y, bh, cols[i]);
@@ -190,7 +199,7 @@ void setup() {
   // Timer text style: foreground + background (!) so we don't clear big rects
   gfx->setTextSize(8);
   gfx->setTextWrap(false);
-  gfx->setTextColor(WHITE, BLACK);
+  gfx->setTextColor(WHITE, hex565(0x14215E));
 
   #if USE_RING
     init_ring_lut();   // heavy math done once
@@ -202,11 +211,20 @@ void setup() {
 
   // Initial timer draw
   last_second_ms = millis();
-  char mmss[6]; 
-  fmt_mmss(countdown_left, mmss);
-  strcpy(last_text, mmss);
+  char hhmmss[9]; 
+  char timer_name[16];
+
+  fmt_hhmmss(countdown_left, hhmmss);
+  strcpy(last_text, hhmmss);
   gfx->setCursor(TXT_X, TXT_Y);
-  gfx->print(mmss);
+  gfx->print(hhmmss);
+
+  // Write the timer name above the time
+  sprintf(timer_name, "Countdown Timer");
+  strcpy(last_name, timer_name);
+  gfx->setTextSize(4);
+  gfx->setCursor(TXT_X - 60, TXT_Y - 40);
+  gfx->print(timer_name);
 }
 
 void loop() {
@@ -218,18 +236,28 @@ if (now - last_second_ms >= 1000) { // if a second has passed
   countdown_left = (countdown_left > 0) ? (countdown_left - 1) : COUNTDOWN_SECONDS;
 
   // Update the text once per second (you already do this)
-  char mmss[6]; fmt_mmss(countdown_left, mmss);
-  if (strcmp(mmss, last_text) != 0) {
-    strcpy(last_text, mmss);
+  char hhmmss[9]; fmt_hhmmss(countdown_left, hhmmss);
+  char timer_name[16]; sprintf(timer_name, "Countdown Timer");
+
+  if (strcmp(hhmmss, last_text) != 0) {
+    strcpy(last_text, hhmmss);
+    gfx->setTextSize(8);
     gfx->setCursor(TXT_X, TXT_Y);
-    gfx->print(mmss);  // white text with BLACK bg; tiny overwrite only
+    gfx->print(hhmmss);  // white text with BLACK bg; tiny overwrite only
+  }
+
+  if (strcmp(timer_name, last_name) != 0) {
+    strcpy(last_name, timer_name);
+    gfx->setTextSize(4);
+    gfx->setCursor(TXT_X - 60, TXT_Y - 40);
+    gfx->print(timer_name);
   }
 }
 
 // --- Animate ring ~30 FPS, tied to whole countdown ---
 #if USE_RING
 static uint32_t last_ring_ms = 0;
-if (now - last_ring_ms >= 33) {                 // ~30 FPS
+if (now - last_ring_ms >= 100) {                 // 33 --> ~30 FPS
   last_ring_ms = now;
 
   // fractional seconds within the current second
