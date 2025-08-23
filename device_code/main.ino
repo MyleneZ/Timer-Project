@@ -12,7 +12,7 @@
 #endif
 
 // ------- Display timing (stable) -------
-#define PCLK_HZ         14000000
+#define PCLK_HZ         12000000
 #define PCLK_ACTIVE_NEG 1
 #define H_FRONT   24
 #define H_PULSE    4
@@ -35,8 +35,8 @@ const int RING_CX = 650; // TODO: we went from 720 to 650, adjust the text
 const int RING_X  = RING_CX - RING_SZ/2;     // on-screen placement
 const int RING_Y  = RING_CY - RING_SZ/2;
 
-const int TXT_Y = UI_RIGHT_Y - 64;
-const int TXT_X = RING_CX - RING_RO - 512;    // baseline for size=2 text
+const int TXT_Y = UI_RIGHT_Y - 32;
+const int TXT_X = RING_CX - RING_RO - 412;    // baseline for size=2 text
 // ------------------------
 
 // ------- Countdown -------
@@ -73,6 +73,20 @@ static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
 static inline uint16_t hex565(uint32_t rgb) {     // 0xRRGGBB
   return rgb565((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
 }
+static inline uint16_t lerp565(uint16_t c0, uint16_t c1, uint8_t t /*0..255*/) {
+  // work directly in 5/6/5 space to keep it fast
+  uint16_t r0 = (c0 >> 11) & 0x1F, g0 = (c0 >> 5) & 0x3F, b0 = c0 & 0x1F;
+  uint16_t r1 = (c1 >> 11) & 0x1F, g1 = (c1 >> 5) & 0x3F, b1 = c1 & 0x1F;
+  uint16_t r = (uint16_t)((r0 * (255 - t) + r1 * t) / 255);
+  uint16_t g = (uint16_t)((g0 * (255 - t) + g1 * t) / 255);
+  uint16_t b = (uint16_t)((b0 * (255 - t) + b1 * t) / 255);
+  return (r << 11) | (g << 5) | b;
+}
+// Gradient endpoints (t=0 -> start, t=255 -> end)
+static uint16_t GRAD_START = hex565(0xe9faff);   // light blue (trail)
+static uint16_t GRAD_END   = hex565(0x0099ff);   // deep blue  (lead)
+static bool     invertGradient = false;          // set true to reverse
+
 
 static void draw_grid_left(uint16_t color, int dx, int dy) {
   for (int x = 0; x < UI_RIGHT_Y; x += dx) gfx->drawFastVLine(x, 0, gfx->height(), color);
@@ -108,11 +122,28 @@ static void i2s_init() {
 }
 #endif
 
-// ---------- Timer state ----------
-static uint32_t countdown_left = COUNTDOWN_SECONDS;
+// Timer array
+int timer_array[3] = {600, 0, 600};
+
+// ---------- Timer 1 State ----------
+static uint32_t countdown_left = timer_array[0];
 static uint32_t last_second_ms = 0;
 static char last_text[9] = "--------";
 static char last_name[16] = "---------------";
+// ---------------------------------
+
+// ---------- Timer 2 State ----------
+static uint32_t countdown_left_2 = timer_array[1];
+static uint32_t last_second_ms_2 = 0;
+static char last_text_2[9] = "--------";
+static char last_name_2[16] = "---------------";
+// ---------------------------------
+
+// ---------- Timer 3 State ----------
+static uint32_t countdown_left_3 = timer_array[2];
+static uint32_t last_second_ms_3 = 0;
+static char last_text_3[9] = "--------";
+static char last_name_3[16] = "---------------";
 // ---------------------------------
 
 // ---------- Ring LUT + buffer (no Arduino_Canvas!) ----------
@@ -146,31 +177,94 @@ static void init_ring_lut() {
   }
 }
 
-static void draw_ring(float fracRemaining) {
-  // fracRemaining: 1.0 = full time left, 0.0 = time up
+// ----- Cap style toggles -----
+enum CapMode : uint8_t {
+  CAP_NONE   = 0,
+  CAP_LEAD   = 1,   // rounded at the moving end (the advancing edge)
+  CAP_TRAIL  = 2,   // rounded at the fixed 12 o'clock end
+  CAP_BOTH   = 3    // CAP_LEAD | CAP_TRAIL
+};
+
+// Example use in loop(): draw_ring(fracRemaining, CAP_NONE / CAP_LEAD / CAP_BOTH);
+static void draw_ring(float fracRemaining, uint8_t caps)
+{
   if (fracRemaining < 0) fracRemaining = 0;
   if (fracRemaining > 1) fracRemaining = 1;
 
-  // threshold in [0..65535]
-  uint16_t threshold = (uint16_t)(fracRemaining * 65535.0f + 0.5f);
-  const uint16_t BG = DARKGREY; // TODO: replace with color in between background and ring
-  const uint16_t FG = WHITE; // TODO: replace with light blue gradient from flutter
+  // Angular threshold on our CW-from-12° LUT
+  const uint16_t threshold = (uint16_t)(fracRemaining * 65535.0f + 0.5f);
+  const uint16_t cut       = (uint16_t)(65535 - threshold); // fill if angle >= cut
+  uint32_t span            = (uint32_t)65535 - (uint32_t)cut;
+  if (span == 0) span = 1;                                   // avoid /0 at time-up
 
-  // Reverse direction: our LUT angles are clockwise-from-12.
-  // To fill CCW, we keep pixels whose CW angle >= (FULL - threshold).
-  uint16_t cut = (uint16_t)(65535 - threshold);
+  // Colors for non-filled areas
+  const uint16_t OUTSIDE = hex565(0x14215E);  // page background
+  const uint16_t BG      = hex565(0x44598C);          // donut "empty" color
 
-  for (int i = 0; i < RING_SZ * RING_SZ; i++) {
-    if (!maskLUT[i]) {
-      ringbuf[i] = hex565(0x14215E);                 // outside the donut
-      // ringbuf[i] = BLACK; // debug only
-    } else {
-      ringbuf[i] = (angleLUT[i] >= cut) ? FG : BG;
+  // --- Rounded-cap geometry (on ring midline) ---
+  const int   cx    = RING_SZ / 2;
+  const int   cy    = RING_SZ / 2;
+  const float thick = float(RING_RO - RING_RI);
+  const float r_mid = 0.5f * (RING_RO + RING_RI);
+  const float cap_r = 0.5f * thick + 0.5f;     // small +0.5 for nicer coverage
+  const float cap_r2 = cap_r * cap_r;
+
+  // Moving end angle (CW from 12 o'clock) and fixed end angle
+  const float a_lead  = (1.0f - fracRemaining) * TWO_PI;
+  const float a_trail = 0.0f;
+
+  // Cap centers (0, 1, or 2)
+  float capX[2], capY[2]; uint8_t nCaps = 0;
+  if (caps & CAP_LEAD) {
+    capX[nCaps] = cx + r_mid * sinf(a_lead);
+    capY[nCaps] = cy - r_mid * cosf(a_lead);
+    ++nCaps;
+  }
+  if (caps & CAP_TRAIL) {
+    capX[nCaps] = cx + r_mid * sinf(a_trail);  // = cx
+    capY[nCaps] = cy - r_mid * cosf(a_trail);  // = cy - r_mid
+    ++nCaps;
+  }
+
+  // Build the bitmap with gradient along the filled arc
+  for (int y = 0; y < RING_SZ; ++y) {
+    for (int x = 0; x < RING_SZ; ++x) {
+      const int idx = y * RING_SZ + x;
+
+      if (!maskLUT[idx]) { ringbuf[idx] = OUTSIDE; continue; }
+
+      const uint16_t a = angleLUT[idx];
+      bool inArc = (a >= cut);
+      uint16_t color = BG;
+
+      if (inArc) {
+        // position within filled arc: 0 at trail (cut) → 255 at lead (65535)
+        uint8_t t = (uint8_t)(((uint32_t)(a - cut) * 255U) / span);
+        if (invertGradient) t = 255 - t;
+        color = lerp565(GRAD_START, GRAD_END, t);
+      }
+
+      // Optional rounded caps: force fill + color at the ends
+      if (!inArc && nCaps) {
+        for (uint8_t i = 0; i < nCaps; ++i) {
+          const float dx = (float)x - capX[i];
+          const float dy = (float)y - capY[i];
+          if (dx*dx + dy*dy <= cap_r2) {
+            // Color for cap: lead uses GRAD_END; trail uses GRAD_START
+            color = (i == 0 && (caps & CAP_LEAD)) ? GRAD_START : GRAD_END;
+            inArc = true;
+            break;
+          }
+        }
+      }
+
+      ringbuf[idx] = color;
     }
   }
 
-  // Single compact blit
+  gfx->startWrite();
   gfx->draw16bitRGBBitmap(RING_X, RING_Y, ringbuf, RING_SZ, RING_SZ);
+  gfx->endWrite();
 }
 
 #endif
@@ -184,7 +278,7 @@ void setup() {
   expander->digitalWrite(PCA_TFT_BACKLIGHT, HIGH);
 
   // Static background (left only)
-  gfx->fillScreen(hex565(0x14215E)); // TODO: replace with 14215E
+  gfx->fillScreen(hex565(0x14215E));
 //   const uint16_t cols[] = { RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA, WHITE };
 //   int bh = gfx->height() / 7;
 //   for (int i = 0; i < 7; i++) gfx->fillRect(0, i*bh, UI_RIGHT_Y, bh, cols[i]);
@@ -192,6 +286,26 @@ void setup() {
 
 //   // Right panel once (we won't clear it every frame)
 //   gfx->fillRect(UI_RIGHT_Y, 0, UI_RIGHT_H, gfx->height(), BLACK);
+
+
+  // Figure out how many timers need to be rendered
+  int active_timers = 0;
+  for (int i = 0; i < 3; i++) {
+    if (timer_array[i] > 0) active_timers++;
+  }
+
+  if (active_timers == 3) {
+    // draw a 320x320 rect in the center and another in the right
+    gfx->fillRect(320, 0, 320, 320, hex565(0x2139A4));
+    gfx->fillRect(640, 0, 320, 320, hex565(0x3F56C0));
+
+  } else if (active_timers == 2) {
+    gfx->fillRect(480, 0, 480, 320, hex565(0x2139A4));
+    
+    
+  } else {
+
+  }
 
   // VU frame once
   gfx->drawRect(0, 0, VU_W, gfx->height(), DARKGREY);
@@ -223,7 +337,7 @@ void setup() {
   sprintf(timer_name, "Countdown Timer");
   strcpy(last_name, timer_name);
   gfx->setTextSize(4);
-  gfx->setCursor(TXT_X - 60, TXT_Y - 40);
+  gfx->setCursor(TXT_X, TXT_Y - 40);
   gfx->print(timer_name);
 }
 
@@ -271,7 +385,7 @@ if (now - last_ring_ms >= 100) {                 // 33 --> ~30 FPS
   // fraction of total time remaining (1 → 0 over the entire 10 minutes)
   float fracRemaining = remainingExact / (float)COUNTDOWN_SECONDS;
 
-  draw_ring(fracRemaining);
+  draw_ring(fracRemaining, CAP_LEAD);
 }
 #endif
 
