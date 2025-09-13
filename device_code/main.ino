@@ -39,10 +39,6 @@ const int TXT_Y = UI_RIGHT_Y - 32;
 const int TXT_X = RING_CX - RING_RO - 412;    // baseline for size=2 text
 // ------------------------
 
-// ------- Countdown -------
-static const uint32_t COUNTDOWN_SECONDS = 10 * 60;
-// ------------------------
-
 // Qualia expander
 Arduino_XCA9554SWSPI *expander = new Arduino_XCA9554SWSPI(
   PCA_TFT_RESET, PCA_TFT_CS, PCA_TFT_SCK, PCA_TFT_MOSI, &Wire, 0x3F);
@@ -128,7 +124,12 @@ static void i2s_init() {
 #endif
 
 // Timer array
-int timer_array[3] = {600, 300, 0};
+// ------- Countdown -------
+static const uint32_t COUNTDOWN_SECONDS_1 = 10 * 60;
+static const uint32_t COUNTDOWN_SECONDS_2 = 5 * 60;
+static const uint32_t COUNTDOWN_SECONDS_3 = 5;
+// ------------------------
+int timer_array[3] = {COUNTDOWN_SECONDS_1, COUNTDOWN_SECONDS_2, COUNTDOWN_SECONDS_3};
 
 // ---------- Timer 1 State ----------
 static char timer_name_1[16] = "Timer 1";
@@ -160,7 +161,7 @@ static uint16_t ringbuf[RING_SZ * RING_SZ];        // RGB565 bitmap to blit
 static uint16_t angleLUT[RING_SZ * RING_SZ];       // angle in [0..65535]
 static uint8_t  maskLUT[RING_SZ * RING_SZ];        // 1 = in donut, 0 = outside
 
-static void init_ring_lut() {
+static void init_ring_lut(float scale=1.0f) {
 
   // pick a random color
   int colorPicker = random(0,5);
@@ -183,17 +184,17 @@ static void init_ring_lut() {
   }
 
   const float SCALE  = 65535.0f / TWO_PI;
-  const int cx = RING_SZ / 2;
-  const int cy = RING_SZ / 2;
+  const int cx = (int)(RING_SZ * scale) / 2;
+  const int cy = (int)(RING_SZ * scale) / 2;
   const int ro2 = RING_RO * RING_RO;
   const int ri2 = RING_RI * RING_RI;
-  for (int y = 0; y < RING_SZ; y++) {
+  for (int y = 0; y < (int)(RING_SZ * scale); y++) {
     int dy = y - cy;
     int dy2 = dy * dy;
-    for (int x = 0; x < RING_SZ; x++) {
+    for (int x = 0; x < (int)(RING_SZ * scale); x++) {
       int dx = x - cx;
       int r2 = dx*dx + dy2;
-      int idx = y * RING_SZ + x;
+      int idx = y * (int)(RING_SZ * scale) + x;
       if (r2 <= ro2 && r2 >= ri2) {
         float theta = atan2f((float)dx, (float)(-dy)); // cw angle from 12 o'clock
         if (theta < 0) theta += TWO_PI;
@@ -215,7 +216,7 @@ enum CapMode : uint8_t {
 };
 
 // Example use in loop(): draw_ring(fracRemaining, CAP_NONE / CAP_LEAD / CAP_BOTH);
-static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RING_Y, uint16_t bg=hex565(0x14215E))
+static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RING_Y, uint16_t bg=hex565(0x14215E), float scale=1.0f)
 {
   if (fracRemaining < 0) fracRemaining = 0;
   if (fracRemaining > 1) fracRemaining = 1;
@@ -231,8 +232,8 @@ static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RIN
   const uint16_t BG      = hex565(0x44598C);          // donut "empty" color
 
   // --- Rounded-cap geometry (on ring midline) ---
-  const int   cx    = RING_SZ / 2;
-  const int   cy    = RING_SZ / 2;
+  const int   cx    = (int)(RING_SZ * scale) / 2;
+  const int   cy    = (int)(RING_SZ * scale) / 2;
   const float thick = float(RING_RO - RING_RI);
   const float r_mid = 0.5f * (RING_RO + RING_RI);
   const float cap_r = 0.5f * thick + 0.5f;     // small +0.5 for nicer coverage
@@ -256,9 +257,9 @@ static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RIN
   }
 
   // Build the bitmap with gradient along the filled arc
-  for (int y = 0; y < RING_SZ; ++y) {
-    for (int x = 0; x < RING_SZ; ++x) {
-      const int idx = y * RING_SZ + x;
+  for (int y = 0; y < (int)(RING_SZ * scale); ++y) {
+    for (int x = 0; x < (int)(RING_SZ * scale); ++x) {
+      const int idx = y * (int)(RING_SZ * scale) + x;
 
       if (!maskLUT[idx]) { ringbuf[idx] = OUTSIDE; continue; }
 
@@ -393,6 +394,72 @@ void renderTimers() {
     // Tri-mode: all three timers share the screen
     gfx->fillRect(320, 0, 320, 320, hex565(0x2139A4));
     gfx->fillRect(640, 0, 320, 320, hex565(0x3F56C0));
+
+    // VU frame once
+    gfx->drawRect(0, 0, VU_W, gfx->height(), DARKGREY);
+
+    gfx->setTextSize(4);
+    gfx->setTextWrap(false);
+    gfx->setTextColor(WHITE, hex565(0x14215E));
+
+    #if USE_RING
+      init_ring_lut(0.4f);   // heavy math done once
+      draw_ring(1.0f, CAP_LEAD, RING_CX - 660, RING_CY - 60, hex565(0x14215E), 0.4f);
+
+      draw_ring(1.0f, CAP_LEAD, RING_CX + 320 - 660, RING_CY - 60, hex565(0x2139A4), 0.4f);
+
+      draw_ring(1.0f, CAP_LEAD, RING_CX + 640 - 660, RING_CY - 60, hex565(0x3F56C0), 0.4f);
+    #endif
+
+    last_second_ms = millis();
+    char hhmmss[9]; 
+    char timer_name[16];
+
+    // Timer 1
+    fmt_hhmmss(countdown_left, hhmmss);
+    strcpy(last_text, hhmmss);
+    gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40);
+    gfx->print(hhmmss);
+
+    // Write the timer name above the time
+    sprintf(timer_name, timer_name_1);
+    strcpy(last_name, timer_name);
+    gfx->setTextSize(3);
+    gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40 - 40);
+    gfx->print(timer_name);
+
+
+    // Timer 2
+    gfx->setTextSize(4);
+    gfx->setTextColor(WHITE, hex565(0x2139A4));
+
+    fmt_hhmmss(countdown_left_2, hhmmss);
+    strcpy(last_text_2, hhmmss);
+    gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40);
+    gfx->print(hhmmss);
+
+    // Write the timer name above the time
+    sprintf(timer_name, timer_name_2);
+    strcpy(last_name_2, timer_name);
+    gfx->setTextSize(3);
+    gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40 - 40);
+    gfx->print(timer_name);
+
+    // Timer 3
+    gfx->setTextSize(4);
+    gfx->setTextColor(WHITE, hex565(0x2139A4));
+
+    fmt_hhmmss(countdown_left_3, hhmmss);
+    strcpy(last_text_3, hhmmss);
+    gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40);
+    gfx->print(hhmmss);
+
+    // Write the timer name above the time
+    sprintf(timer_name, timer_name_3);
+    strcpy(last_name_3, timer_name);
+    gfx->setTextSize(3);
+    gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40 - 40);
+    gfx->print(timer_name);
   }
 }
 
@@ -473,14 +540,186 @@ void setup() {
 }
 
 void loop() {
-//   uint32_t now = millis();
+  uint32_t now = millis();
 
-// // --- Update countdown once per second (you already have this) ---
-// if (now - last_second_ms >= 1000) { // if a second has passed
-//   last_second_ms += 1000;
-//   countdown_left = (countdown_left > 0) ? (countdown_left - 1) : COUNTDOWN_SECONDS;
+  // Count active timers
+  int active_timers = 0;
+  for (int i=0; i<3; i++) {
+    if (timer_array[i] > 0) active_timers++;
+  }
 
-//   // Update the text once per second (you already do this)
+// --- Update countdown once per second ---
+if (now - last_second_ms >= 1000) { // if a second has passed
+  last_second_ms += 1000;
+
+  char hhmmss1[9];
+  char hhmmss2[9];
+  char hhmmss3[9];
+  float frac1 = 1.0f;
+  float frac2 = 1.0f;
+  float frac3 = 1.0f;
+
+  float sub;
+
+  // --- Animate ring ~30 FPS, tied to whole countdown ---
+  #if USE_RING
+  static uint32_t last_ring_ms = 0;
+  if (now - last_ring_ms >= 100) {                 // 33 --> ~30 FPS
+    last_ring_ms = now;
+
+    // fractional seconds within the current second
+    sub = (float)(now - last_second_ms) / 1000.0f;
+    if (sub < 0) sub = 0; if (sub > 1) sub = 1;
+  }
+  #endif
+
+
+  if (active_timers >= 1) {
+    countdown_left = (countdown_left > 0) ? (countdown_left - 1) : COUNTDOWN_SECONDS_1;
+    fmt_hhmmss(countdown_left, hhmmss1);
+
+    #if USE_RING
+        // exact seconds remaining, including sub-second
+      float remainingExact = (float)countdown_left + (1.0f - sub);
+      if (remainingExact < 0) remainingExact = 0;
+
+      // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+      frac1 = remainingExact / (float)COUNTDOWN_SECONDS_1;
+    #endif
+  }
+  if (active_timers >= 2) {
+    countdown_left_2 = (countdown_left_2 > 0) ? (countdown_left_2 - 1) : COUNTDOWN_SECONDS_2;
+    fmt_hhmmss(countdown_left_2, hhmmss2);
+
+    #if USE_RING
+        // exact seconds remaining, including sub-second
+      float remainingExact2 = (float)countdown_left_2 + (1.0f - sub);
+      if (remainingExact2 < 0) remainingExact2 = 0;
+
+      // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+      frac2 = remainingExact2 / (float)COUNTDOWN_SECONDS_2;
+    #endif
+  }
+  if (active_timers >= 3) {
+    countdown_left_3 = (countdown_left_3 > 0) ? (countdown_left_3 - 1) : COUNTDOWN_SECONDS_3;
+    fmt_hhmmss(countdown_left_3, hhmmss3);
+
+    #if USE_RING
+        // exact seconds remaining, including sub-second
+      float remainingExact3 = (float)countdown_left_3 + (1.0f - sub);
+      if (remainingExact3 < 0) remainingExact3 = 0;
+
+      // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+      frac3 = remainingExact3 / (float)COUNTDOWN_SECONDS_3;
+    #endif
+  } 
+
+
+  if (active_timers == 1) {
+      if (strcmp(hhmmss1, last_text) != 0) {
+      strcpy(last_text, hhmmss1);
+      gfx->setTextSize(8);
+      gfx->setCursor(TXT_X, TXT_Y);
+      gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_1, last_name) != 0) {
+      strcpy(last_name, timer_name_1);
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X - 60, TXT_Y - 40);
+      gfx->print(timer_name_1);
+    }
+
+    #if USE_RING
+      draw_ring(frac1, CAP_LEAD);
+    #endif
+  } else if (active_timers == 2) {
+    if (strcmp(hhmmss1, last_text) != 0) { // TODO: wrong background color for some reason
+      strcpy(last_text, hhmmss1);
+      gfx->setTextSize(5);
+      gfx->setCursor(TXT_X + 85, TXT_Y - 40 - 40);
+      gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_1, last_name) != 0) {
+      strcpy(last_name, timer_name_1);
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X + 85, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_1);
+    }
+
+    if (strcmp(hhmmss2, last_text_2) != 0) {
+      strcpy(last_text_2, hhmmss2);
+      gfx->setTextSize(5);
+      gfx->setCursor(TXT_X + 480 + 85, TXT_Y - 40 - 40);
+      gfx->print(hhmmss2);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_2, last_name_2) != 0) {
+      strcpy(last_name_2, timer_name_2);
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X + 480 + 85, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_2);
+    }
+
+    #if USE_RING
+      draw_ring(frac1, CAP_LEAD, RING_CX - 680, RING_CY - 60);
+
+      draw_ring(frac2, CAP_LEAD, RING_CX + 480 - 680, RING_CY - 60, hex565(0x2139A4));
+    #endif
+  } else if (active_timers == 3) {
+    if (strcmp(hhmmss1, last_text) != 0) {
+      strcpy(last_text, hhmmss1);
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40);
+      gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_1, last_name) != 0) {
+      strcpy(last_name, timer_name_1);
+      gfx->setTextSize(3);
+      gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_1);
+    }
+
+    if (strcmp(hhmmss2, last_text_2) != 0) {
+      strcpy(last_text_2, hhmmss2);
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40);
+      gfx->print(hhmmss2);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_2, last_name_2) != 0) {
+      strcpy(last_name_2, timer_name_2);
+      gfx->setTextSize(3);
+      gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_2);
+    }
+
+    if (strcmp(hhmmss3, last_text_3) != 0) {
+      strcpy(last_text_3, hhmmss3);
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40);
+      gfx->print(hhmmss3);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_3, last_name_3) != 0) {
+      strcpy(last_name_3, timer_name_3);
+      gfx->setTextSize(3);
+      gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_3);
+    }
+
+    #if USE_RING
+      draw_ring(frac1, CAP_LEAD, RING_CX - 660, RING_CY - 60, hex565(0x14215E), 0.4f);
+
+      draw_ring(frac2, CAP_LEAD, RING_CX + 320 - 660, RING_CY - 60, hex565(0x2139A4), 0.4f);
+
+      draw_ring(frac3, CAP_LEAD, RING_CX + 640 - 660, RING_CY - 60, hex565(0x3F56C0), 0.4f);
+    #endif
+  }
+
+//   // Update the text once per second
 //   char hhmmss[9]; fmt_hhmmss(countdown_left, hhmmss);
 //   char timer_name[16]; sprintf(timer_name, "Countdown Timer");
 
@@ -497,9 +736,9 @@ void loop() {
 //     gfx->setCursor(TXT_X - 60, TXT_Y - 40);
 //     gfx->print(timer_name);
 //   }
-// }
+}
 
-// // --- Animate ring ~30 FPS, tied to whole countdown ---
+// --- Animate ring ~30 FPS, tied to whole countdown ---
 // #if USE_RING
 // static uint32_t last_ring_ms = 0;
 // if (now - last_ring_ms >= 100) {                 // 33 --> ~30 FPS
