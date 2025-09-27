@@ -3,12 +3,17 @@
 #include <Arduino_GFX_Library.h>
 #include <math.h>
 
-#define USE_MIC 0   // set to 1 only when SPH0645 is wired
+#define USE_MIC 1   // set to 1 only when SPH0645 is wired
 #define USE_RING 1  // ring on/off
 
 #if USE_MIC
   #include <driver/i2s.h>
-  #include <soc/i2s_reg.h>
+  // #include <soc/i2s_reg.h>
+  // #include <I2S.h>
+  #define I2S_PORT I2S_NUM_0
+  #define PIN_BCLK  SCK   // Qualia SCK header pin
+  #define PIN_WS    A0    // Qualia A0
+  #define PIN_SD    A1    // Qualia A1
 #endif
 
 // ------- Display timing (stable) -------
@@ -93,7 +98,8 @@ static void draw_grid_left(uint16_t color, int dx, int dy) {
   for (int x = 0; x < UI_RIGHT_Y; x += dx) gfx->drawFastVLine(x, 0, gfx->height(), color);
   for (int y = 0; y < gfx->height(); y += dy) gfx->drawFastHLine(0, y, UI_RIGHT_Y, color);
 }
-static void fmt_hhmmss(uint32_t sec, char *out) {
+static void fmt_hhmmss(uint32_t sec, char *out, uint16_t color) {
+  gfx->setTextColor(WHITE, color);
   uint32_t m = sec / 60, s = sec % 60;
   uint32_t h = m / 60;
   m = m % 60;
@@ -101,26 +107,35 @@ static void fmt_hhmmss(uint32_t sec, char *out) {
 }
 
 #if USE_MIC
-static void i2s_init() {
-  i2s_config_t cfg = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = 16000,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 8,
-    .dma_buf_len = 256,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0
-  };
-  i2s_pin_config_t pins = { 4, 17, -1, 7 };
-  ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL));
-  REG_SET_BIT(I2S_RX_TIMING_REG(I2S_NUM_0), BIT(1));
-  REG_SET_BIT(I2S_RX_CONF1_REG(I2S_NUM_0), I2S_RX_MSB_SHIFT);
-  ESP_ERROR_CHECK(i2s_set_pin(I2S_NUM_0, &pins));
-}
+
+/* SPH0645 I2S mic wiring to the Qualia
+  LRCL -> A0
+  BCLK -> SCK
+  DOUT -> A1
+  GND -> GND
+  3V -> 3.3V
+*/
+
+// static void i2s_init() {
+//   i2s_config_t cfg = {
+//     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+//     .sample_rate = 16000,
+//     .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+//     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+//     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+//     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+//     .dma_buf_count = 8,
+//     .dma_buf_len = 256,
+//     .use_apll = false,
+//     .tx_desc_auto_clear = false,
+//     .fixed_mclk = 0
+//   };
+//   i2s_pin_config_t pins = { 4, 17, -1, 7 };
+//   ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL));
+//   REG_SET_BIT(I2S_RX_TIMING_REG(I2S_NUM_0), BIT(1));
+//   REG_SET_BIT(I2S_RX_CONF1_REG(I2S_NUM_0), I2S_RX_MSB_SHIFT);
+//   ESP_ERROR_CHECK(i2s_set_pin(I2S_NUM_0, &pins));
+// }
 #endif
 
 // Timer array
@@ -331,7 +346,7 @@ void renderTimers() {
     char hhmmss[9]; 
     char timer_name[16];
 
-    fmt_hhmmss(countdown_left, hhmmss);
+    fmt_hhmmss(countdown_left, hhmmss, hex565(0x14215E));
     strcpy(last_text, hhmmss);
     gfx->setCursor(TXT_X, TXT_Y);
     gfx->print(hhmmss);
@@ -364,7 +379,7 @@ void renderTimers() {
     char hhmmss[9]; 
     char timer_name[16];
 
-    fmt_hhmmss(countdown_left, hhmmss);
+    fmt_hhmmss(countdown_left, hhmmss, hex565(0x14215E));
     strcpy(last_text, hhmmss);
     gfx->setCursor(TXT_X + 85, TXT_Y - 40 - 40);
     gfx->print(hhmmss);
@@ -377,9 +392,9 @@ void renderTimers() {
     gfx->print(timer_name);
 
     gfx->setTextSize(5);
-    gfx->setTextColor(WHITE, hex565(0x2139A4));
+    // gfx->setTextColor(WHITE, hex565(0x2139A4));
 
-    fmt_hhmmss(countdown_left_2, hhmmss);
+    fmt_hhmmss(countdown_left_2, hhmmss, hex565(0x2139A4));
     strcpy(last_text_2, hhmmss);
     gfx->setCursor(TXT_X + 480 + 85, TXT_Y - 40 - 40);
     gfx->print(hhmmss);
@@ -416,7 +431,7 @@ void renderTimers() {
     char timer_name[16];
 
     // Timer 1
-    fmt_hhmmss(countdown_left, hhmmss);
+    fmt_hhmmss(countdown_left, hhmmss, hex565(0x14215E));
     strcpy(last_text, hhmmss);
     gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40);
     gfx->print(hhmmss);
@@ -431,9 +446,9 @@ void renderTimers() {
 
     // Timer 2
     gfx->setTextSize(4);
-    gfx->setTextColor(WHITE, hex565(0x2139A4));
+    // gfx->setTextColor(WHITE, hex565(0x2139A4));
 
-    fmt_hhmmss(countdown_left_2, hhmmss);
+    fmt_hhmmss(countdown_left_2, hhmmss, hex565(0x2139A4));
     strcpy(last_text_2, hhmmss);
     gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40);
     gfx->print(hhmmss);
@@ -447,9 +462,9 @@ void renderTimers() {
 
     // Timer 3
     gfx->setTextSize(4);
-    gfx->setTextColor(WHITE, hex565(0x2139A4));
+    // gfx->setTextColor(WHITE, hex565(0x2139A4));
 
-    fmt_hhmmss(countdown_left_3, hhmmss);
+    fmt_hhmmss(countdown_left_3, hhmmss, hex565(0x3F56C0));
     strcpy(last_text_3, hhmmss);
     gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40);
     gfx->print(hhmmss);
@@ -472,7 +487,32 @@ void setup() {
   expander->digitalWrite(PCA_TFT_BACKLIGHT, HIGH);
 
   #if USE_MIC
-    i2s_init();
+    // i2s_init();
+    Serial.begin(115200);
+    // while (!Serial) {
+    //   ; // wait for serial port to connect. Needed for native USB port only
+    // }
+
+    // // start I2S at 16 kHz with 32-bits per sample
+    // if (!I2S.begin(I2S_PHILIPS_MODE, 16000, 32)) {
+    //   Serial.println("Failed to initialize I2S!");
+    //   while (1); // do nothing
+    // }
+      i2s_config_t cfg = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = 16000,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT, // or RIGHT depending on SEL
+        .communication_format = I2S_COMM_FORMAT_STAND_MSB,
+        .intr_alloc_flags = 0,
+        .dma_buf_count = 8,
+        .dma_buf_len = 256,
+        .use_apll = false
+      };
+      i2s_pin_config_t pins = { .bck_io_num = PIN_BCLK, .ws_io_num = PIN_WS,
+                                .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = PIN_SD };
+      i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
+      i2s_set_pin(I2S_PORT, &pins);
   #endif
 
 //   // Static background (left only)
@@ -576,7 +616,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
   if (active_timers >= 1) {
     countdown_left = (countdown_left > 0) ? (countdown_left - 1) : COUNTDOWN_SECONDS_1;
-    fmt_hhmmss(countdown_left, hhmmss1);
+    fmt_hhmmss(countdown_left, hhmmss1, hex565(0x14215E));
 
     #if USE_RING
         // exact seconds remaining, including sub-second
@@ -589,7 +629,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
   }
   if (active_timers >= 2) {
     countdown_left_2 = (countdown_left_2 > 0) ? (countdown_left_2 - 1) : COUNTDOWN_SECONDS_2;
-    fmt_hhmmss(countdown_left_2, hhmmss2);
+    fmt_hhmmss(countdown_left_2, hhmmss2, hex565(0x2139A4));
 
     #if USE_RING
         // exact seconds remaining, including sub-second
@@ -602,7 +642,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
   }
   if (active_timers >= 3) {
     countdown_left_3 = (countdown_left_3 > 0) ? (countdown_left_3 - 1) : COUNTDOWN_SECONDS_3;
-    fmt_hhmmss(countdown_left_3, hhmmss3);
+    fmt_hhmmss(countdown_left_3, hhmmss3, hex565(0x3F56C0));
 
     #if USE_RING
         // exact seconds remaining, including sub-second
@@ -618,6 +658,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
   if (active_timers == 1) {
       if (strcmp(hhmmss1, last_text) != 0) {
       strcpy(last_text, hhmmss1);
+      gfx->setTextColor(WHITE, hex565(0x14215E));
       gfx->setTextSize(8);
       gfx->setCursor(TXT_X, TXT_Y);
       gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
@@ -625,6 +666,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
     if (strcmp(timer_name_1, last_name) != 0) {
       strcpy(last_name, timer_name_1);
+      gfx->setTextColor(WHITE, hex565(0x14215E));
       gfx->setTextSize(4);
       gfx->setCursor(TXT_X - 60, TXT_Y - 40);
       gfx->print(timer_name_1);
@@ -634,8 +676,14 @@ if (now - last_second_ms >= 1000) { // if a second has passed
       draw_ring(frac1, CAP_LEAD);
     #endif
   } else if (active_timers == 2) {
+    #if USE_RING
+      draw_ring(frac1, CAP_LEAD, RING_CX - 680, RING_CY - 60);
+
+      draw_ring(frac2, CAP_LEAD, RING_CX + 480 - 680, RING_CY - 60, hex565(0x2139A4));
+    #endif
     if (strcmp(hhmmss1, last_text) != 0) { // TODO: wrong background color for some reason
       strcpy(last_text, hhmmss1);
+      gfx->setTextColor(WHITE, hex565(0x14215E));
       gfx->setTextSize(5);
       gfx->setCursor(TXT_X + 85, TXT_Y - 40 - 40);
       gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
@@ -643,6 +691,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
     if (strcmp(timer_name_1, last_name) != 0) {
       strcpy(last_name, timer_name_1);
+      gfx->setTextColor(WHITE, hex565(0x14215E));
       gfx->setTextSize(4);
       gfx->setCursor(TXT_X + 85, TXT_Y - 40 - 40 - 40);
       gfx->print(timer_name_1);
@@ -650,6 +699,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
     if (strcmp(hhmmss2, last_text_2) != 0) {
       strcpy(last_text_2, hhmmss2);
+      gfx->setTextColor(WHITE, hex565(0x2139A4));
       gfx->setTextSize(5);
       gfx->setCursor(TXT_X + 480 + 85, TXT_Y - 40 - 40);
       gfx->print(hhmmss2);  // white text with BLACK bg; tiny overwrite only
@@ -657,59 +707,12 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
     if (strcmp(timer_name_2, last_name_2) != 0) {
       strcpy(last_name_2, timer_name_2);
+      gfx->setTextColor(WHITE, hex565(0x2139A4));
       gfx->setTextSize(4);
       gfx->setCursor(TXT_X + 480 + 85, TXT_Y - 40 - 40 - 40);
       gfx->print(timer_name_2);
     }
-
-    #if USE_RING
-      draw_ring(frac1, CAP_LEAD, RING_CX - 680, RING_CY - 60);
-
-      draw_ring(frac2, CAP_LEAD, RING_CX + 480 - 680, RING_CY - 60, hex565(0x2139A4));
-    #endif
   } else if (active_timers == 3) {
-    if (strcmp(hhmmss1, last_text) != 0) {
-      strcpy(last_text, hhmmss1);
-      gfx->setTextSize(4);
-      gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40);
-      gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
-    }
-
-    if (strcmp(timer_name_1, last_name) != 0) {
-      strcpy(last_name, timer_name_1);
-      gfx->setTextSize(3);
-      gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40 - 40);
-      gfx->print(timer_name_1);
-    }
-
-    if (strcmp(hhmmss2, last_text_2) != 0) {
-      strcpy(last_text_2, hhmmss2);
-      gfx->setTextSize(4);
-      gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40);
-      gfx->print(hhmmss2);  // white text with BLACK bg; tiny overwrite only
-    }
-
-    if (strcmp(timer_name_2, last_name_2) != 0) {
-      strcpy(last_name_2, timer_name_2);
-      gfx->setTextSize(3);
-      gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40 - 40);
-      gfx->print(timer_name_2);
-    }
-
-    if (strcmp(hhmmss3, last_text_3) != 0) {
-      strcpy(last_text_3, hhmmss3);
-      gfx->setTextSize(4);
-      gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40);
-      gfx->print(hhmmss3);  // white text with BLACK bg; tiny overwrite only
-    }
-
-    if (strcmp(timer_name_3, last_name_3) != 0) {
-      strcpy(last_name_3, timer_name_3);
-      gfx->setTextSize(3);
-      gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40 - 40);
-      gfx->print(timer_name_3);
-    }
-
     #if USE_RING
       draw_ring(frac1, CAP_LEAD, RING_CX - 660, RING_CY - 60, hex565(0x14215E), 0.4f);
 
@@ -717,6 +720,53 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
       draw_ring(frac3, CAP_LEAD, RING_CX + 640 - 660, RING_CY - 60, hex565(0x3F56C0), 0.4f);
     #endif
+    if (strcmp(hhmmss1, last_text) != 0) {
+      strcpy(last_text, hhmmss1);
+      gfx->setTextColor(WHITE, hex565(0x14215E));
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40);
+      gfx->print(hhmmss1);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_1, last_name) != 0) {
+      strcpy(last_name, timer_name_1);
+      gfx->setTextColor(WHITE, hex565(0x14215E));
+      gfx->setTextSize(3);
+      gfx->setCursor(TXT_X - 100, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_1);
+    }
+
+    if (strcmp(hhmmss2, last_text_2) != 0) {
+      strcpy(last_text_2, hhmmss2);
+      gfx->setTextColor(WHITE, hex565(0x2139A4));
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40);
+      gfx->print(hhmmss2);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_2, last_name_2) != 0) {
+      strcpy(last_name_2, timer_name_2);
+      gfx->setTextColor(WHITE, hex565(0x2139A4));
+      gfx->setTextSize(3);
+      gfx->setCursor(TXT_X + 230, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_2);
+    }
+
+    if (strcmp(hhmmss3, last_text_3) != 0) {
+      strcpy(last_text_3, hhmmss3);
+      gfx->setTextColor(WHITE, hex565(0x3F56C0));
+      gfx->setTextSize(4);
+      gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40);
+      gfx->print(hhmmss3);  // white text with BLACK bg; tiny overwrite only
+    }
+
+    if (strcmp(timer_name_3, last_name_3) != 0) {
+      strcpy(last_name_3, timer_name_3);
+      gfx->setTextColor(WHITE, hex565(0x3F56C0));
+      gfx->setTextSize(3);
+      gfx->setCursor(TXT_X + 465 + 85, TXT_Y - 40 - 40 - 40);
+      gfx->print(timer_name_3);
+    }
   }
 
 //   // Update the text once per second
@@ -737,6 +787,28 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 //     gfx->print(timer_name);
 //   }
 }
+
+# ifdef USE_MIC
+  // int sample = I2S.read();
+
+  // if ((sample == 0) || (sample == -1) ) {
+  //   return;
+  // }
+  // // convert to 18 bit signed
+  // sample >>= 14; 
+
+  // // if it's non-zero print value to serial
+  // Serial.println(sample);
+    int32_t sampleBuf[256];
+    size_t readBytes = 0;
+    i2s_read(I2S_PORT, sampleBuf, sizeof(sampleBuf), &readBytes, portMAX_DELAY);
+
+    Serial.print("Read bytes: ");
+    // output the numbers to serial
+    for (size_t i = 0; i < readBytes / sizeof(int32_t); i++) {
+      Serial.println(sampleBuf[i]);
+    }
+# endif
 
 // --- Animate ring ~30 FPS, tied to whole countdown ---
 // #if USE_RING
