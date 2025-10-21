@@ -25,6 +25,9 @@ Train Data Script:
 - "One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Minutes, Hours"
 - "Ten, Eleven, Twelve, Thirteen, Fourteen, Fifteen, Sixteen, Seventeen, Eighteen, Nineteen"
 - "Twenty, Thirty, Forty, Fifty, Sixty, Seventy, Eighty, Ninety"
+- "Baking, Break, Homework, Exercise, Workout"
+
+
 
 Bootup Behaviour
 - show on the display that no timers are currently running
@@ -34,6 +37,7 @@ SFX List
 - cancel ping
 - bootup sound
 - confirm ping (e.g. when a timer is set)
+starting point for sources: https://pixabay.com/sound-effects/
 
 
 
@@ -55,3 +59,21 @@ https://learn.adafruit.com/adafruit-qualia-esp32-s3-for-rgb666-displays/arduino-
 exit status 1
 
 Compilation error: 'LED_BUILTIN' was not declared in this scope
+
+
+
+
+Voice Command Logic
+- detect when a command starts and ends
+    - several periods are either silence or have constant noise --> nothing is happening
+    - random spikes and dips in audio --> potential command
+- determine if the command is one we care about
+    - use the audio sources to create a "footprint" of an expected command
+    - take the detected potential command and determine if a section matches any footprint
+        - we use "distance" to the expected footprint to determine what command if any
+    - word soup approach: this allows us to accept both "set a timer called X for Y" and "set X for Y"
+- act on the commands
+    - Design Notes:
+        - if all three timers are active, ignore new set command but accept stops (must at least say the number of which timer to stop OR the name)
+        - when setting a timer name, check if one of the supported key terms is within the segment and set the timer name accordingly
+            - if none, default to Timer X (X changes based on placement to avoid confusion)

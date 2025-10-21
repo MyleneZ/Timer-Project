@@ -5,6 +5,7 @@
 
 #define USE_MIC 1   // set to 1 only when SPH0645 is wired
 #define USE_RING 1  // ring on/off
+#define USE_SPEAKER 0 // for playing SFX
 
 #if USE_MIC
   #include <driver/i2s.h>
@@ -107,6 +108,81 @@ static void fmt_hhmmss(uint32_t sec, char *out, uint16_t color) {
 }
 
 #if USE_MIC
+
+// Voice Command Variables
+enum TokenId : uint8_t {
+  TK_SET, TK_CANCEL, TK_ADD, TK_MINUS, TK_STOP, TK_TIMER,
+  TK_MINUTE, TK_MINUTES, TK_HOUR, TK_HOURS,
+  TK_ONE, TK_TWO, TK_THREE, TK_FOUR, TK_FIVE, TK_SIX, TK_SEVEN, TK_EIGHT, TK_NINE,
+  TK_TEN, TK_ELEVEN, TK_TWELVE, TK_THIRTEEN, TK_FOURTEEN, TK_FIFTEEN, TK_SIXTEEN, TK_SEVENTEEN, TK_EIGHTEEN, TK_NINETEEN,
+  TK_TWENTY, TK_THIRTY, TK_FORTY, TK_FIFTY, TK_SIXTY, TK_SEVENTY, TK_EIGHTY, TK_NINETY,
+  TK_BAKING, TK_COOKING, TK_BREAK, TK_HOMEWORK, TK_EXERCISE, TK_WORKOUT
+};
+
+// Voice Command Helper Functions
+static int token_to_number(TokenID token) {
+  switch (token) {
+    case TK_ONE: return 1;
+    case TK_TWO: return 2;
+    case TK_THREE: return 3;
+    case TK_FOUR: return 4;
+    case TK_FIVE: return 5;
+    case TK_SIX: return 6;
+    case TK_SEVEN: return 7;
+    case TK_EIGHT: return 8;
+    case TK_NINE: return 9;
+    case TK_TEN: return 10;
+    case TK_ELEVEN: return 11;
+    case TK_TWELVE: return 12;
+    case TK_THIRTEEN: return 13;
+    case TK_FOURTEEN: return 14;
+    case TK_FIFTEEN: return 15;
+    case TK_SIXTEEN: return 16;
+    case TK_SEVENTEEN: return 17;
+    case TK_EIGHTEEN: return 18;
+    case TK_NINETEEN: return 19;
+    case TK_TWENTY: return 20;
+    case TK_THIRTY: return 30;
+    case TK_FORTY: return 40;
+    case TK_FIFTY: return 50;
+    case TK_SIXTY: return 60;
+    case TK_SEVENTY: return 70;
+    case TK_EIGHTY: return 80;
+    case TK_NINETY: return 90;
+    default: return 0;
+  }
+}
+
+static void process_voice_command(const std::vector<TokenID>& tokens) {
+  // Determine command type
+  int commandType = -1;
+  for (TokenID token : tokens) {
+    if (token == TK_SET) {
+      commandType = 0;
+    } else if (token == TK_CANCEL || token == TK_STOP) {
+      commandType = 1;
+    } else if (token == TK_ADD) {
+      commandType = 2;
+    } else if (token == TK_MINUS) {
+      commandType = 3;
+    }
+  }
+
+  if (commandType == -1) {
+    return;
+  }
+
+
+  // Set Command Handling
+
+  // Cancel/Stop Command Handling
+
+  // Add Command Handling
+
+  // Minus Command Handling
+
+}
+
 
 /* SPH0645 I2S mic wiring to the Qualia
   LRCL -> A0
