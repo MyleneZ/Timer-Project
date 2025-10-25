@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
 #include <math.h>
+#include <vector>
 
 #define USE_MIC 1   // set to 1 only when SPH0645 is wired
 #define USE_RING 1  // ring on/off
@@ -120,68 +121,68 @@ enum TokenId : uint8_t {
 };
 
 // Voice Command Helper Functions
-static int token_to_number(TokenID token) {
-  switch (token) {
-    case TK_ONE: return 1;
-    case TK_TWO: return 2;
-    case TK_THREE: return 3;
-    case TK_FOUR: return 4;
-    case TK_FIVE: return 5;
-    case TK_SIX: return 6;
-    case TK_SEVEN: return 7;
-    case TK_EIGHT: return 8;
-    case TK_NINE: return 9;
-    case TK_TEN: return 10;
-    case TK_ELEVEN: return 11;
-    case TK_TWELVE: return 12;
-    case TK_THIRTEEN: return 13;
-    case TK_FOURTEEN: return 14;
-    case TK_FIFTEEN: return 15;
-    case TK_SIXTEEN: return 16;
-    case TK_SEVENTEEN: return 17;
-    case TK_EIGHTEEN: return 18;
-    case TK_NINETEEN: return 19;
-    case TK_TWENTY: return 20;
-    case TK_THIRTY: return 30;
-    case TK_FORTY: return 40;
-    case TK_FIFTY: return 50;
-    case TK_SIXTY: return 60;
-    case TK_SEVENTY: return 70;
-    case TK_EIGHTY: return 80;
-    case TK_NINETY: return 90;
-    default: return 0;
-  }
-}
+// static int token_to_number(TokenId token) {
+//   switch (token) {
+//     case TK_ONE: return 1;
+//     case TK_TWO: return 2;
+//     case TK_THREE: return 3;
+//     case TK_FOUR: return 4;
+//     case TK_FIVE: return 5;
+//     case TK_SIX: return 6;
+//     case TK_SEVEN: return 7;
+//     case TK_EIGHT: return 8;
+//     case TK_NINE: return 9;
+//     case TK_TEN: return 10;
+//     case TK_ELEVEN: return 11;
+//     case TK_TWELVE: return 12;
+//     case TK_THIRTEEN: return 13;
+//     case TK_FOURTEEN: return 14;
+//     case TK_FIFTEEN: return 15;
+//     case TK_SIXTEEN: return 16;
+//     case TK_SEVENTEEN: return 17;
+//     case TK_EIGHTEEN: return 18;
+//     case TK_NINETEEN: return 19;
+//     case TK_TWENTY: return 20;
+//     case TK_THIRTY: return 30;
+//     case TK_FORTY: return 40;
+//     case TK_FIFTY: return 50;
+//     case TK_SIXTY: return 60;
+//     case TK_SEVENTY: return 70;
+//     case TK_EIGHTY: return 80;
+//     case TK_NINETY: return 90;
+//     default: return 0;
+//   }
+// }
 
-static void process_voice_command(const std::vector<TokenID>& tokens) {
-  // Determine command type
-  int commandType = -1;
-  for (TokenID token : tokens) {
-    if (token == TK_SET) {
-      commandType = 0;
-    } else if (token == TK_CANCEL || token == TK_STOP) {
-      commandType = 1;
-    } else if (token == TK_ADD) {
-      commandType = 2;
-    } else if (token == TK_MINUS) {
-      commandType = 3;
-    }
-  }
+// static void process_voice_command(const std::vector<TokenId>& tokens) {
+//   // Determine command type
+//   int commandType = -1;
+//   for (TokenId token : tokens) {
+//     if (token == TK_SET) {
+//       commandType = 0;
+//     } else if (token == TK_CANCEL || token == TK_STOP) {
+//       commandType = 1;
+//     } else if (token == TK_ADD) {
+//       commandType = 2;
+//     } else if (token == TK_MINUS) {
+//       commandType = 3;
+//     }
+//   }
 
-  if (commandType == -1) {
-    return;
-  }
+//   if (commandType == -1) {
+//     return;
+//   }
 
 
-  // Set Command Handling
+//   // Set Command Handling
 
-  // Cancel/Stop Command Handling
+//   // Cancel/Stop Command Handling
 
-  // Add Command Handling
+//   // Add Command Handling
 
-  // Minus Command Handling
+//   // Minus Command Handling
 
-}
+// }
 
 
 /* SPH0645 I2S mic wiring to the Qualia
@@ -252,6 +253,11 @@ static uint16_t ringbuf[RING_SZ * RING_SZ];        // RGB565 bitmap to blit
 static uint16_t angleLUT[RING_SZ * RING_SZ];       // angle in [0..65535]
 static uint8_t  maskLUT[RING_SZ * RING_SZ];        // 1 = in donut, 0 = outside
 
+static inline int ring_size_px(float scale) {
+  int sz = (int)(RING_SZ * scale + 0.5f);
+  return sz < 1 ? 1 : sz;
+}
+
 static void init_ring_lut(float scale=1.0f) {
 
   // pick a random color
@@ -274,20 +280,48 @@ static void init_ring_lut(float scale=1.0f) {
       break;
   }
 
-  const float SCALE  = 65535.0f / TWO_PI;
-  const int cx = (int)(RING_SZ * scale) / 2;
-  const int cy = (int)(RING_SZ * scale) / 2;
-  const int ro2 = RING_RO * RING_RO;
-  const int ri2 = RING_RI * RING_RI;
-  for (int y = 0; y < (int)(RING_SZ * scale); y++) {
+  // const float SCALE  = 65535.0f / TWO_PI;
+  // const int cx = (int)(RING_SZ * scale) / 2;
+  // const int cy = (int)(RING_SZ * scale) / 2;
+  // const int ro2 = RING_RO * RING_RO;
+  // const int ri2 = RING_RI * RING_RI;
+  // for (int y = 0; y < (int)(RING_SZ * scale); y++) {
+  //   int dy = y - cy;
+  //   int dy2 = dy * dy;
+  //   for (int x = 0; x < (int)(RING_SZ * scale); x++) {
+  //     int dx = x - cx;
+  //     int r2 = dx*dx + dy2;
+  //     int idx = y * (int)(RING_SZ * scale) + x;
+  //     if (r2 <= ro2 && r2 >= ri2) {
+  //       float theta = atan2f((float)dx, (float)(-dy)); // cw angle from 12 o'clock
+  //       if (theta < 0) theta += TWO_PI;
+  //       angleLUT[idx] = (uint16_t)(theta * SCALE + 0.5f);
+  //       maskLUT[idx]  = 1;
+  //     } else {
+  //       maskLUT[idx]  = 0;
+  //     }
+  //   }
+  // }
+  const int SZ  = ring_size_px(scale);
+  const float SCALE = 65535.0f / TWO_PI;
+  const int cx = SZ / 2;
+  const int cy = SZ / 2;
+
+  // *** scale the radii ***
+  const int ro = (int)(RING_RO * scale + 0.5f);
+  const int ri = (int)(RING_RI * scale + 0.5f);
+  const int ro2 = ro * ro;
+  const int ri2 = ri * ri;
+
+  for (int y = 0; y < SZ; y++) {
     int dy = y - cy;
     int dy2 = dy * dy;
-    for (int x = 0; x < (int)(RING_SZ * scale); x++) {
+    for (int x = 0; x < SZ; x++) {
       int dx = x - cx;
       int r2 = dx*dx + dy2;
-      int idx = y * (int)(RING_SZ * scale) + x;
+      int idx = y * SZ + x;
       if (r2 <= ro2 && r2 >= ri2) {
-        float theta = atan2f((float)dx, (float)(-dy)); // cw angle from 12 o'clock
+        float theta = atan2f((float)dx, (float)(-dy)); // cw from 12 o'clock
         if (theta < 0) theta += TWO_PI;
         angleLUT[idx] = (uint16_t)(theta * SCALE + 0.5f);
         maskLUT[idx]  = 1;
@@ -307,34 +341,116 @@ enum CapMode : uint8_t {
 };
 
 // Example use in loop(): draw_ring(fracRemaining, CAP_NONE / CAP_LEAD / CAP_BOTH);
-static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RING_Y, uint16_t bg=hex565(0x14215E), float scale=1.0f)
+// static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RING_Y, uint16_t bg=hex565(0x14215E), float scale=1.0f)
+// {
+//   if (fracRemaining < 0) fracRemaining = 0;
+//   if (fracRemaining > 1) fracRemaining = 1;
+
+//   // Angular threshold on our CW-from-12° LUT
+//   const uint16_t threshold = (uint16_t)(fracRemaining * 65535.0f + 0.5f);
+//   const uint16_t cut       = (uint16_t)(65535 - threshold); // fill if angle >= cut
+//   uint32_t span            = (uint32_t)65535 - (uint32_t)cut;
+//   if (span == 0) span = 1;                                   // avoid /0 at time-up
+
+//   // Colors for non-filled areas
+//   const uint16_t OUTSIDE = bg;  // page background
+//   const uint16_t BG      = hex565(0x44598C);          // donut "empty" color
+
+//   // --- Rounded-cap geometry (on ring midline) ---
+//   const int   cx    = (int)(RING_SZ * scale) / 2;
+//   const int   cy    = (int)(RING_SZ * scale) / 2;
+//   const float thick = float(RING_RO - RING_RI);
+//   const float r_mid = 0.5f * (RING_RO + RING_RI);
+//   const float cap_r = 0.5f * thick + 0.5f;     // small +0.5 for nicer coverage
+//   const float cap_r2 = cap_r * cap_r;
+
+//   // Moving end angle (CW from 12 o'clock) and fixed end angle
+//   const float a_lead  = (1.0f - fracRemaining) * TWO_PI;
+//   const float a_trail = 0.0f;
+
+//   // Cap centers (0, 1, or 2)
+//   float capX[2], capY[2]; uint8_t nCaps = 0;
+//   if (caps & CAP_LEAD) {
+//     capX[nCaps] = cx + r_mid * sinf(a_lead);
+//     capY[nCaps] = cy - r_mid * cosf(a_lead);
+//     ++nCaps;
+//   }
+//   if (caps & CAP_TRAIL) {
+//     capX[nCaps] = cx + r_mid * sinf(a_trail);  // = cx
+//     capY[nCaps] = cy - r_mid * cosf(a_trail);  // = cy - r_mid
+//     ++nCaps;
+//   }
+
+//   // Build the bitmap with gradient along the filled arc
+//   for (int y = 0; y < (int)(RING_SZ * scale); ++y) {
+//     for (int x = 0; x < (int)(RING_SZ * scale); ++x) {
+//       const int idx = y * (int)(RING_SZ * scale) + x;
+
+//       if (!maskLUT[idx]) { ringbuf[idx] = OUTSIDE; continue; }
+
+//       const uint16_t a = angleLUT[idx];
+//       bool inArc = (a >= cut);
+//       uint16_t color = BG;
+
+//       if (inArc) {
+//         // position within filled arc: 0 at trail (cut) → 255 at lead (65535)
+//         uint8_t t = (uint8_t)(((uint32_t)(a - cut) * 255U) / span);
+//         if (invertGradient) t = 255 - t;
+//         color = lerp565(GRAD_START, GRAD_END, t);
+//       }
+
+//       // Optional rounded caps: force fill + color at the ends
+//       if (!inArc && nCaps) {
+//         for (uint8_t i = 0; i < nCaps; ++i) {
+//           const float dx = (float)x - capX[i];
+//           const float dy = (float)y - capY[i];
+//           if (dx*dx + dy*dy <= cap_r2) {
+//             // Color for cap: lead uses GRAD_END; trail uses GRAD_START
+//             color = (i == 0 && (caps & CAP_LEAD)) ? GRAD_START : GRAD_END;
+//             inArc = true;
+//             break;
+//           }
+//         }
+//       }
+
+//       ringbuf[idx] = color;
+//     }
+//   }
+
+//   gfx->startWrite();
+//   gfx->draw16bitRGBBitmap(x, y, ringbuf, RING_SZ, RING_SZ);
+//   gfx->endWrite();
+// }
+static void draw_ring(float fracRemaining, uint8_t caps,
+                      int x=RING_X, int y=RING_Y,
+                      uint16_t bg=hex565(0x14215E), float scale=1.0f)
 {
   if (fracRemaining < 0) fracRemaining = 0;
   if (fracRemaining > 1) fracRemaining = 1;
 
-  // Angular threshold on our CW-from-12° LUT
   const uint16_t threshold = (uint16_t)(fracRemaining * 65535.0f + 0.5f);
-  const uint16_t cut       = (uint16_t)(65535 - threshold); // fill if angle >= cut
+  const uint16_t cut       = (uint16_t)(65535 - threshold);
   uint32_t span            = (uint32_t)65535 - (uint32_t)cut;
-  if (span == 0) span = 1;                                   // avoid /0 at time-up
+  if (span == 0) span = 1;
 
-  // Colors for non-filled areas
-  const uint16_t OUTSIDE = bg;  // page background
-  const uint16_t BG      = hex565(0x44598C);          // donut "empty" color
+  const uint16_t OUTSIDE = bg;
+  const uint16_t BG      = hex565(0x44598C);
 
-  // --- Rounded-cap geometry (on ring midline) ---
-  const int   cx    = (int)(RING_SZ * scale) / 2;
-  const int   cy    = (int)(RING_SZ * scale) / 2;
-  const float thick = float(RING_RO - RING_RI);
-  const float r_mid = 0.5f * (RING_RO + RING_RI);
-  const float cap_r = 0.5f * thick + 0.5f;     // small +0.5 for nicer coverage
+  const int   SZ   = ring_size_px(scale);
+  const int   cx   = SZ / 2;
+  const int   cy   = SZ / 2;
+
+  // *** scale ring thickness & mid radius ***
+  const float ro   = RING_RO * scale;
+  const float ri   = RING_RI * scale;
+  const float thick= ro - ri;
+  const float r_mid= 0.5f * (ro + ri);
+  const float cap_r= 0.5f * thick + 0.5f;
   const float cap_r2 = cap_r * cap_r;
 
-  // Moving end angle (CW from 12 o'clock) and fixed end angle
   const float a_lead  = (1.0f - fracRemaining) * TWO_PI;
   const float a_trail = 0.0f;
 
-  // Cap centers (0, 1, or 2)
   float capX[2], capY[2]; uint8_t nCaps = 0;
   if (caps & CAP_LEAD) {
     capX[nCaps] = cx + r_mid * sinf(a_lead);
@@ -342,15 +458,15 @@ static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RIN
     ++nCaps;
   }
   if (caps & CAP_TRAIL) {
-    capX[nCaps] = cx + r_mid * sinf(a_trail);  // = cx
-    capY[nCaps] = cy - r_mid * cosf(a_trail);  // = cy - r_mid
+    capX[nCaps] = cx + r_mid * sinf(a_trail);
+    capY[nCaps] = cy - r_mid * cosf(a_trail);
     ++nCaps;
   }
 
-  // Build the bitmap with gradient along the filled arc
-  for (int y = 0; y < (int)(RING_SZ * scale); ++y) {
-    for (int x = 0; x < (int)(RING_SZ * scale); ++x) {
-      const int idx = y * (int)(RING_SZ * scale) + x;
+  // *** fill only SZ×SZ, using SZ stride ***
+  for (int yy = 0; yy < SZ; ++yy) {
+    for (int xx = 0; xx < SZ; ++xx) {
+      const int idx = yy * SZ + xx;
 
       if (!maskLUT[idx]) { ringbuf[idx] = OUTSIDE; continue; }
 
@@ -359,21 +475,17 @@ static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RIN
       uint16_t color = BG;
 
       if (inArc) {
-        // position within filled arc: 0 at trail (cut) → 255 at lead (65535)
         uint8_t t = (uint8_t)(((uint32_t)(a - cut) * 255U) / span);
         if (invertGradient) t = 255 - t;
         color = lerp565(GRAD_START, GRAD_END, t);
       }
 
-      // Optional rounded caps: force fill + color at the ends
       if (!inArc && nCaps) {
         for (uint8_t i = 0; i < nCaps; ++i) {
-          const float dx = (float)x - capX[i];
-          const float dy = (float)y - capY[i];
+          const float dx = (float)xx - capX[i];
+          const float dy = (float)yy - capY[i];
           if (dx*dx + dy*dy <= cap_r2) {
-            // Color for cap: lead uses GRAD_END; trail uses GRAD_START
             color = (i == 0 && (caps & CAP_LEAD)) ? GRAD_START : GRAD_END;
-            inArc = true;
             break;
           }
         }
@@ -383,10 +495,12 @@ static void draw_ring(float fracRemaining, uint8_t caps, int x=RING_X, int y=RIN
     }
   }
 
+  // *** blit with SZ, not RING_SZ ***
   gfx->startWrite();
-  gfx->draw16bitRGBBitmap(x, y, ringbuf, RING_SZ, RING_SZ);
+  gfx->draw16bitRGBBitmap(x, y, ringbuf, SZ, SZ);
   gfx->endWrite();
 }
+
 
 #endif
 // -------------------------------------------------------------
@@ -864,7 +978,7 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 //   }
 }
 
-# ifdef USE_MIC
+# if USE_MIC
   // int sample = I2S.read();
 
   // if ((sample == 0) || (sample == -1) ) {
@@ -910,3 +1024,4 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 
   delay(2);
 }
+
