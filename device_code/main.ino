@@ -227,6 +227,7 @@ int timer_array[3] = {COUNTDOWN_SECONDS_1, COUNTDOWN_SECONDS_2, COUNTDOWN_SECOND
 static char timer_name_1[16] = "Timer 1";
 static uint32_t countdown_left = timer_array[0];
 static uint32_t last_second_ms = 0;
+static uint32_t last_ring_ms = 0;
 static char last_text[9] = "--------";
 static char last_name[16] = "---------------";
 // ---------------------------------
@@ -235,6 +236,7 @@ static char last_name[16] = "---------------";
 static char timer_name_2[16] = "Timer 2";
 static uint32_t countdown_left_2 = timer_array[1];
 static uint32_t last_second_ms_2 = 0;
+static uint32_t last_ring_ms_2 = 0;
 static char last_text_2[9] = "--------";
 static char last_name_2[16] = "---------------";
 // ---------------------------------
@@ -243,6 +245,7 @@ static char last_name_2[16] = "---------------";
 static char timer_name_3[16] = "Timer 3";
 static uint32_t countdown_left_3 = timer_array[2];
 static uint32_t last_second_ms_3 = 0;
+static uint32_t last_ring_ms_3 = 0;
 static char last_text_3[9] = "--------";
 static char last_name_3[16] = "---------------";
 // ---------------------------------
@@ -533,6 +536,7 @@ void renderTimers() {
     #endif
 
     last_second_ms = millis();
+    last_ring_ms = millis();
     char hhmmss[9]; 
     char timer_name[16];
 
@@ -566,6 +570,7 @@ void renderTimers() {
     #endif
 
     last_second_ms = millis();
+    last_ring_ms = millis();
     char hhmmss[9]; 
     char timer_name[16];
 
@@ -608,15 +613,16 @@ void renderTimers() {
     gfx->setTextColor(WHITE, hex565(0x14215E));
 
     #if USE_RING
-      init_ring_lut(0.4f);   // heavy math done once
-      draw_ring(1.0f, CAP_LEAD, RING_CX - 660, RING_CY - 60, hex565(0x14215E), 0.4f);
+      init_ring_lut(0.8f);   // heavy math done once
+      draw_ring(1.0f, CAP_LEAD, RING_CX - 650, RING_CY - 30, hex565(0x14215E), 0.8f);
 
-      draw_ring(1.0f, CAP_LEAD, RING_CX + 320 - 660, RING_CY - 60, hex565(0x2139A4), 0.4f);
+      draw_ring(1.0f, CAP_LEAD, RING_CX + 320 - 650, RING_CY - 30, hex565(0x2139A4), 0.8f);
 
-      draw_ring(1.0f, CAP_LEAD, RING_CX + 640 - 660, RING_CY - 60, hex565(0x3F56C0), 0.4f);
+      draw_ring(1.0f, CAP_LEAD, RING_CX + 640 - 650, RING_CY - 30, hex565(0x3F56C0), 0.8f);
     #endif
 
     last_second_ms = millis();
+    last_ring_ms = millis();
     char hhmmss[9]; 
     char timer_name[16];
 
@@ -785,63 +791,63 @@ if (now - last_second_ms >= 1000) { // if a second has passed
   char hhmmss1[9];
   char hhmmss2[9];
   char hhmmss3[9];
-  float frac1 = 1.0f;
-  float frac2 = 1.0f;
-  float frac3 = 1.0f;
+  // float frac1 = 1.0f;
+  // float frac2 = 1.0f;
+  // float frac3 = 1.0f;
 
-  float sub;
+  // float sub;
 
   // --- Animate ring ~30 FPS, tied to whole countdown ---
-  #if USE_RING
-  static uint32_t last_ring_ms = 0;
-  if (now - last_ring_ms >= 100) {                 // 33 --> ~30 FPS
-    last_ring_ms = now;
+  // #if USE_RING
+  // static uint32_t last_ring_ms = 0;
+  // if (now - last_ring_ms >= 100) {                 // 33 --> ~30 FPS
+  //   last_ring_ms = now;
 
-    // fractional seconds within the current second
-    sub = (float)(now - last_second_ms) / 1000.0f;
-    if (sub < 0) sub = 0; if (sub > 1) sub = 1;
-  }
-  #endif
+  //   // fractional seconds within the current second
+  //   sub = (float)(now - last_second_ms) / 1000.0f;
+  //   if (sub < 0) sub = 0; if (sub > 1) sub = 1;
+  // }
+  // #endif
 
 
   if (active_timers >= 1) {
     countdown_left = (countdown_left > 0) ? (countdown_left - 1) : COUNTDOWN_SECONDS_1;
     fmt_hhmmss(countdown_left, hhmmss1, hex565(0x14215E));
 
-    #if USE_RING
-        // exact seconds remaining, including sub-second
-      float remainingExact = (float)countdown_left + (1.0f - sub);
-      if (remainingExact < 0) remainingExact = 0;
+    // #if USE_RING
+    //     // exact seconds remaining, including sub-second
+    //   float remainingExact = (float)countdown_left + (1.0f - sub);
+    //   if (remainingExact < 0) remainingExact = 0;
 
-      // fraction of total time remaining (1 → 0 over the entire 10 minutes)
-      frac1 = remainingExact / (float)COUNTDOWN_SECONDS_1;
-    #endif
+    //   // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+    //   frac1 = remainingExact / (float)COUNTDOWN_SECONDS_1;
+    // #endif
   }
   if (active_timers >= 2) {
     countdown_left_2 = (countdown_left_2 > 0) ? (countdown_left_2 - 1) : COUNTDOWN_SECONDS_2;
     fmt_hhmmss(countdown_left_2, hhmmss2, hex565(0x2139A4));
 
-    #if USE_RING
-        // exact seconds remaining, including sub-second
-      float remainingExact2 = (float)countdown_left_2 + (1.0f - sub);
-      if (remainingExact2 < 0) remainingExact2 = 0;
+    // #if USE_RING
+    //     // exact seconds remaining, including sub-second
+    //   float remainingExact2 = (float)countdown_left_2 + (1.0f - sub);
+    //   if (remainingExact2 < 0) remainingExact2 = 0;
 
-      // fraction of total time remaining (1 → 0 over the entire 10 minutes)
-      frac2 = remainingExact2 / (float)COUNTDOWN_SECONDS_2;
-    #endif
+    //   // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+    //   frac2 = remainingExact2 / (float)COUNTDOWN_SECONDS_2;
+    // #endif
   }
   if (active_timers >= 3) {
     countdown_left_3 = (countdown_left_3 > 0) ? (countdown_left_3 - 1) : COUNTDOWN_SECONDS_3;
     fmt_hhmmss(countdown_left_3, hhmmss3, hex565(0x3F56C0));
 
-    #if USE_RING
-        // exact seconds remaining, including sub-second
-      float remainingExact3 = (float)countdown_left_3 + (1.0f - sub);
-      if (remainingExact3 < 0) remainingExact3 = 0;
+    // #if USE_RING
+    //     // exact seconds remaining, including sub-second
+    //   float remainingExact3 = (float)countdown_left_3 + (1.0f - sub);
+    //   if (remainingExact3 < 0) remainingExact3 = 0;
 
-      // fraction of total time remaining (1 → 0 over the entire 10 minutes)
-      frac3 = remainingExact3 / (float)COUNTDOWN_SECONDS_3;
-    #endif
+    //   // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+    //   frac3 = remainingExact3 / (float)COUNTDOWN_SECONDS_3;
+    // #endif
   } 
 
 
@@ -862,15 +868,15 @@ if (now - last_second_ms >= 1000) { // if a second has passed
       gfx->print(timer_name_1);
     }
 
-    #if USE_RING
-      draw_ring(frac1, CAP_LEAD);
-    #endif
+    // #if USE_RING
+    //   draw_ring(frac1, CAP_LEAD);
+    // #endif
   } else if (active_timers == 2) {
-    #if USE_RING
-      draw_ring(frac1, CAP_LEAD, RING_CX - 680, RING_CY - 60);
+    // #if USE_RING
+    //   draw_ring(frac1, CAP_LEAD, RING_CX - 680, RING_CY - 60);
 
-      draw_ring(frac2, CAP_LEAD, RING_CX + 480 - 680, RING_CY - 60, hex565(0x2139A4));
-    #endif
+    //   draw_ring(frac2, CAP_LEAD, RING_CX + 480 - 680, RING_CY - 60, hex565(0x2139A4));
+    // #endif
     if (strcmp(hhmmss1, last_text) != 0) { // TODO: wrong background color for some reason
       strcpy(last_text, hhmmss1);
       gfx->setTextColor(WHITE, hex565(0x14215E));
@@ -903,13 +909,13 @@ if (now - last_second_ms >= 1000) { // if a second has passed
       gfx->print(timer_name_2);
     }
   } else if (active_timers == 3) {
-    #if USE_RING
-      draw_ring(frac1, CAP_LEAD, RING_CX - 660, RING_CY - 60, hex565(0x14215E), 0.4f);
+    // #if USE_RING
+    //   draw_ring(frac1, CAP_LEAD, RING_CX - 650, RING_CY - 30, hex565(0x14215E), 0.8f);
 
-      draw_ring(frac2, CAP_LEAD, RING_CX + 320 - 660, RING_CY - 60, hex565(0x2139A4), 0.4f);
+    //   draw_ring(frac2, CAP_LEAD, RING_CX + 320 - 650, RING_CY - 30, hex565(0x2139A4), 0.8f);
 
-      draw_ring(frac3, CAP_LEAD, RING_CX + 640 - 660, RING_CY - 60, hex565(0x3F56C0), 0.4f);
-    #endif
+    //   draw_ring(frac3, CAP_LEAD, RING_CX + 640 - 650, RING_CY - 30, hex565(0x3F56C0), 0.8f);
+    // #endif
     if (strcmp(hhmmss1, last_text) != 0) {
       strcpy(last_text, hhmmss1);
       gfx->setTextColor(WHITE, hex565(0x14215E));
@@ -976,6 +982,59 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 //     gfx->setCursor(TXT_X - 60, TXT_Y - 40);
 //     gfx->print(timer_name);
 //   }
+}
+
+// Separately update rings to allow smoother animation
+const uint32_t FRAME_DT = 67;
+if (now - last_ring_ms >= FRAME_DT) {
+  do { last_ring_ms +=  }
+
+  #if USE_RING
+  last_ring_ms = now;
+  float frac1 = 1.0f;
+  float frac2 = 1.0f;
+  float frac3 = 1.0f;
+
+  float sub;
+
+  // fractional seconds within the current second
+  sub = (float)(now - last_ring_ms) / 1000.0f;
+  if (sub < 0) sub = 0; if (sub > 1) sub = 1;
+
+  if (active_timers >= 1) {
+    float remainingExact = (float)countdown_left + (0.067f - sub);
+    if (remainingExact < 0) remainingExact = 0;
+
+    // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+    frac1 = remainingExact / (float)COUNTDOWN_SECONDS_1;
+  }
+  if (active_timers >= 2) {
+    float remainingExact2 = (float)countdown_left_2 + (0.067f - sub);
+    if (remainingExact2 < 0) remainingExact2 = 0;
+
+    // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+    frac2 = remainingExact2 / (float)COUNTDOWN_SECONDS_2;
+  }
+  if (active_timers >= 3) {
+    float remainingExact3 = (float)countdown_left_3 + (0.067f - sub);
+    if (remainingExact3 < 0) remainingExact3 = 0;
+
+    // fraction of total time remaining (1 → 0 over the entire 10 minutes)
+    frac3 = remainingExact3 / (float)COUNTDOWN_SECONDS_3;
+  }
+
+  if (active_timers == 1) {
+    draw_ring(frac1, CAP_LEAD);
+  } else if (active_timers == 2) {
+    draw_ring(frac1, CAP_LEAD, RING_CX - 680, RING_CY - 60);
+    draw_ring(frac2, CAP_LEAD, RING_CX + 480 - 680, RING_CY - 60, hex565(0x2139A4));
+  } else {
+    draw_ring(frac1, CAP_LEAD, RING_CX - 650, RING_CY - 30, hex565(0x14215E), 0.8f);
+    draw_ring(frac2, CAP_LEAD, RING_CX + 320 - 650, RING_CY - 30, hex565(0x2139A4), 0.8f);
+    draw_ring(frac3, CAP_LEAD, RING_CX + 640 - 650, RING_CY - 30, hex565(0x3F56C0), 0.8f);
+  }
+
+  #endif
 }
 
 # if USE_MIC
