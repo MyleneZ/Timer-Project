@@ -108,8 +108,6 @@ static void fmt_hhmmss(uint32_t sec, char *out, uint16_t color) {
   sprintf(out, "%02lu:%02lu:%02lu", (unsigned long)h, (unsigned long)m, (unsigned long)s);
 }
 
-#if USE_MIC
-
 // Voice Command Variables
 enum TokenId : uint8_t {
   TK_SET, TK_CANCEL, TK_ADD, TK_MINUS, TK_STOP, TK_TIMER,
@@ -119,6 +117,13 @@ enum TokenId : uint8_t {
   TK_TWENTY, TK_THIRTY, TK_FORTY, TK_FIFTY, TK_SIXTY, TK_SEVENTY, TK_EIGHTY, TK_NINETY,
   TK_BAKING, TK_COOKING, TK_BREAK, TK_HOMEWORK, TK_EXERCISE, TK_WORKOUT
 };
+
+#if USE_MIC
+
+static inline int16_t sph0645_word_to_s16(int32_t w32) {
+  int32_t s18 = (w32 >> 14);
+  return (int16_t)(s18 >> 2);
+}
 
 // Voice Command Helper Functions
 // static int token_to_number(TokenId token) {
@@ -154,35 +159,47 @@ enum TokenId : uint8_t {
 //   }
 // }
 
-// static void process_voice_command(const std::vector<TokenId>& tokens) {
-//   // Determine command type
-//   int commandType = -1;
-//   for (TokenId token : tokens) {
-//     if (token == TK_SET) {
-//       commandType = 0;
-//     } else if (token == TK_CANCEL || token == TK_STOP) {
-//       commandType = 1;
-//     } else if (token == TK_ADD) {
-//       commandType = 2;
-//     } else if (token == TK_MINUS) {
-//       commandType = 3;
-//     }
-//   }
+static void process_voice_command(const std::vector<int>& tokens) {
+  // Determine command type
+  int commandType = -1;
+  for (int token : tokens) {
+    if (token == 0) { // Set timer
+      char new_timer_name[16] = "homework";
+      int amount = 10;
+      bool isMinutes = true;
 
-//   if (commandType == -1) {
-//     return;
-//   }
+      // Get number of active timers
+
+      // If already 3, ignore
+      
+      
+    } else if (token == 1) { // Cancel/Stop Timer
+      char cancel_timer_name[16] = "homework";
+    } else if (token == 2) { // Add Timer
+      char add_timer_name[16] = "homework";
+      int amount = 10;
+      bool isMinutes = true;
+    } else if (token == 3) { // Minus Timer
+      char minus_timer_name[16] = "homework";
+      int amount = 10;
+      bool isMinutes = true;
+    }
+  }
+
+  if (commandType == -1) {
+    return;
+  }
 
 
-//   // Set Command Handling
+  // Set Command Handling
 
-//   // Cancel/Stop Command Handling
+  // Cancel/Stop Command Handling
 
-//   // Add Command Handling
+  // Add Command Handling
 
-//   // Minus Command Handling
+  // Minus Command Handling
 
-// }
+}
 
 
 /* SPH0645 I2S mic wiring to the Qualia
@@ -698,8 +715,8 @@ void setup() {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = 16000,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT, // or RIGHT depending on SEL
-        .communication_format = I2S_COMM_FORMAT_STAND_MSB,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT, // TODO: RIGHT is VU=0 so focus on LEFT only for now
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = 0,
         .dma_buf_count = 8,
         .dma_buf_len = 256,
@@ -709,6 +726,9 @@ void setup() {
                                 .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = PIN_SD };
       i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
       i2s_set_pin(I2S_PORT, &pins);
+
+      // REG_SET_BIT(I2S_RX_TIMING_REG(I2S_PORT), BIT(1));
+      // REG_SET_BIT(I2S_RX_CONF1_REG(I2S_PORT), I2S_RX_MSB_SHIFT);
   #endif
 
 //   // Static background (left only)
@@ -987,10 +1007,10 @@ if (now - last_second_ms >= 1000) { // if a second has passed
 // Separately update rings to allow smoother animation
 const uint32_t FRAME_DT = 67;
 if (now - last_ring_ms >= FRAME_DT) {
-  do { last_ring_ms +=  }
+  do { last_ring_ms +=  FRAME_DT; } while (now - last_ring_ms >= FRAME_DT);
 
   #if USE_RING
-  last_ring_ms = now;
+  // last_ring_ms = now;
   float frac1 = 1.0f;
   float frac2 = 1.0f;
   float frac3 = 1.0f;
@@ -1048,14 +1068,29 @@ if (now - last_ring_ms >= FRAME_DT) {
 
   // // if it's non-zero print value to serial
   // Serial.println(sample);
+
+    static uint32_t last_audio_print = 0;
     int32_t sampleBuf[256];
     size_t readBytes = 0;
-    i2s_read(I2S_PORT, sampleBuf, sizeof(sampleBuf), &readBytes, portMAX_DELAY);
+    i2s_read(I2S_PORT, sampleBuf, sizeof(sampleBuf), &readBytes, 0);
 
-    Serial.print("Read bytes: ");
+    const size_t n = readBytes / sizeof(int32_t);
+    int32_t abs_accum = 0;
+
+    // Serial.print("Read bytes: ");
     // output the numbers to serial
-    for (size_t i = 0; i < readBytes / sizeof(int32_t); i++) {
-      Serial.println(sampleBuf[i]);
+    for (size_t i = 0; i < n; ++i) {
+      int16_t s = sph0645_word_to_s16(sampleBuf[i]);
+      abs_accum += (s >= 0 ? s : -s);
+      // Serial.println(sampleBuf[i]);
+    }
+
+    if (now - last_audio_print >= 100) {
+      last_audio_print = now;
+      if (n) {
+        int32_t avg = abs_accum / (int32_t)n;
+        Serial.printf("VU=%ld (n=%u)\n", (long)avg, (unsigned)n);
+      }
     }
 # endif
 
