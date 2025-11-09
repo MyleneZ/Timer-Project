@@ -86,7 +86,7 @@ VAD_POSTROLL_FR = 8
 
 TOKEN_LIST = [
   "set","cancel","add","minus","stop","timer",
-  "minute","minutes","hour","hours",
+  "minute","minutes","hour","hours", "a",
   "one","two","three","four","five","six","seven","eight","nine",
   "ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen",
   "twenty","thirty","forty","fifty","sixty","seventy","eighty","ninety",
