@@ -4,10 +4,17 @@
 #include <math.h>
 #include <driver/i2s.h>
 
+#define USE_SPEAKER 0 // for playing SFX
+#if USE_SPEAKER
+  #include <Arduino.h>
+  #include <esp32-hal-ledc.h>
+  const int AUDIO_PIN = A0;   // A0 JST SIG → STEMMA white wire
+#endif
+
 // ===================== Pins / Qualia =====================
 #define I2S_PORT      I2S_NUM_0
 #define PIN_BCLK      SCK     // Qualia SCK header pin
-#define PIN_WS        A0      // LRCLK
+#define PIN_WS        MOSI      // LRCLK
 #define PIN_SD        A1      // DATA
 
 // ======= QUALIA DISPLAY WIRING (same as your project) =======
@@ -294,6 +301,14 @@ void setup() {
   Wire.setClock(1000000);
   Serial.begin(115200);
 
+  #if USE_SPEAKER
+    if(!ledcAttach(AUDIO_PIN, 20000, 8)) {
+      Serial.println("Failed to setup LEDC for audio output!");
+    }
+
+    ledcWrite(AUDIO_PIN, 128); // start silent
+  #endif
+
   gfx->begin();
   gfx->setRotation(1);
   expander->pinMode(PCA_TFT_BACKLIGHT, OUTPUT);
@@ -385,6 +400,20 @@ void loop() {
       vad = false;
     }
   }
+
+  #if USE_SPEAKER
+    static uint32_t lastBeep = 0;
+    uint32_t nowbeep = millis();
+
+    if (now - lastBeep > 2000) {
+      lastBeep = now;
+
+      // 440 Hz tone for 200 ms
+      ledcWriteTone(AUDIO_PIN, 440);
+      delay(200);
+      ledcWriteTone(AUDIO_PIN, 0);   // 0 = stop tone (duty 0)
+    }
+  #endif
 
   delay(1);
 }

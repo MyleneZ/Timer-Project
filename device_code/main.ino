@@ -14,8 +14,14 @@
   // #include <I2S.h>
   #define I2S_PORT I2S_NUM_0
   #define PIN_BCLK  SCK   // Qualia SCK header pin
-  #define PIN_WS    A0    // Qualia A0
+  #define PIN_WS    MOSI    // Qualia MOSI (was A0)
   #define PIN_SD    A1    // Qualia A1
+#endif
+
+#if USE_SPEAKER
+  #include <Arduino.h>
+  #include <esp32-hal-ledc.h>
+  const int AUDIO_PIN = A0;   // A0 JST SIG → STEMMA white wire
 #endif
 
 // ------- Display timing (stable) -------
@@ -731,6 +737,15 @@ void setup() {
       // REG_SET_BIT(I2S_RX_CONF1_REG(I2S_PORT), I2S_RX_MSB_SHIFT);
   #endif
 
+
+  #if USE_SPEAKER
+    if(!ledcAttach(AUDIO_PIN, 20000, 8)) {
+      Serial.println("Failed to setup LEDC for audio output!");
+    }
+
+    ledcWrite(AUDIO_PIN, 128); // start silent
+  #endif
+
 //   // Static background (left only)
 //   gfx->fillScreen(hex565(0x14215E));
 // //   const uint16_t cols[] = { RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA, WHITE };
@@ -1093,6 +1108,21 @@ if (now - last_ring_ms >= FRAME_DT) {
       }
     }
 # endif
+
+
+#if USE_SPEAKER
+  static uint32_t lastBeep = 0;
+  uint32_t nowbeep = millis();
+
+  if (now - lastBeep > 2000) {
+    lastBeep = now;
+
+    // 440 Hz tone for 200 ms
+    ledcWriteTone(AUDIO_PIN, 440);
+    delay(200);
+    ledcWriteTone(AUDIO_PIN, 0);   // 0 = stop tone (duty 0)
+  }
+#endif
 
 // --- Animate ring ~30 FPS, tied to whole countdown ---
 // #if USE_RING

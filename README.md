@@ -77,3 +77,8 @@ Voice Command Logic
         - if all three timers are active, ignore new set command but accept stops (must at least say the number of which timer to stop OR the name)
         - when setting a timer name, check if one of the supported key terms is within the segment and set the timer name accordingly
             - if none, default to Timer X (X changes based on placement to avoid confusion)
+
+
+
+
+python3 generate_kws_template.py --wavs wavs --out kws_templates.h
