@@ -1,3 +1,18 @@
+/*
+TESTED KEYWORDS:
+- "four" ("one" and "two" get mistaken for this)
+- "three"
+- "stop" is unresponsive
+- "set" and "a" are mistake for "three"
+- make sure to account for homophones ("four" vs "for", "two" vs "to")
+
+
+V2 Testing Notes:
+- set: mistakes to sixteen and add
+- cancel: mistakes to sixteen and seventy
+*/
+
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
@@ -80,12 +95,12 @@ KwsBank g_bank[43];
 
 // Token names for the few you generated so far
 static const char* TOKEN_NAME[43] = {
-  "", "", "", "", "stop", "", "", "", "", "",
+  "set", "cancel", "add", "minus", "stop", "timer", "", "minutes", "", "hours", "a"
   "one", "two", "three", "four",
-  "", "", "", "", "", "",
-  "", "", "", "", "", "",
-  "", "", "", "", "", "",
-  "", "", "", "", "", "",
+  "five", "six", "seven", "eight", "nine", "ten",
+  "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+  "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty",
+  "fifty", "sixty", "seventy", "eighty", "ninety", "",
   "", "", "", "", ""
 };
 
@@ -119,7 +134,7 @@ static void i2s_init_16k_32bit(bool rightChannel)
 static inline int16_t sph0645_word_to_s16(int32_t w32) {
   int32_t s18 = (w32 >> 14);
   if ((w32 != 0) && (w32 != -1) ) {
-    Serial.println(s18);
+    // Serial.println(s18);
   }
   
   return (int16_t)(s18 >> 2);
@@ -257,6 +272,7 @@ static void show_detect(const char* word, float sim) {
   gfx->setTextSize(2);
   gfx->setCursor(20, 260);
   gfx->printf("conf=%.2f", sim);
+  Serial.printf("[KWS] Detected: %s (conf=%.2f)\n", word ? word : "-", sim);
 }
 
 // ===================== Matching helper =====================
@@ -279,7 +295,7 @@ static void match_and_display(const int16_t* segment, int nsamp) {
       if (sim > bestSim) { bestSim = sim; bestTid = tid; }
     }
   }
-  const float TH = 0.70f;   // a bit looser while you have 1 template/word
+  const float TH = 0.25f;   // a bit looser while you have 1 template/word
   if (bestTid >= 0 && bestSim >= TH) {
     show_detect(TOKEN_NAME[bestTid], bestSim);
     Serial.printf("[KWS] %s  sim=%.3f\n",
