@@ -82,3 +82,34 @@ Voice Command Logic
 
 
 python3 generate_kws_template.py --wavs wavs --out kws_templates.h
+
+
+
+
+# Progress Checklist (12/20/2025)
+- Hardware:
+    - [X] Display
+    - [-] Speaker
+    - [X] Microphone
+    - [ ] Case
+- Software:
+    - [ ] Timer UI
+        - [-] Custom Font
+            - Racing Sans One
+        - [X] 1-3 timer support
+        - [X] colored timer rings
+    - [ ] Interactions
+        - [-] Speech Recognition
+            - Continue adding to the dataset
+            - Check conf thresholds
+            - *RPi companion system concept
+        - [-] Sound Effects
+            - Alarm
+            - Confirm Tone
+            - Cancel Tone
+            - Power On/Off sound
+                - Button Press
+            - Paused ping
+            - Resume ping
+- Miscellaneous:
+    - Research Paper
