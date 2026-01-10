@@ -1,35 +1,13 @@
-/*
-TESTED KEYWORDS:
-- "four" ("one" and "two" get mistaken for this)
-- "three"
-- "stop" is unresponsive
-- "set" and "a" are mistake for "three"
-- make sure to account for homophones ("four" vs "for", "two" vs "to")
-
-
-V2 Testing Notes:
-- set: mistakes to sixteen and add
-- cancel: mistakes to sixteen and seventy
-*/
-
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
 #include <math.h>
 #include <driver/i2s.h>
 
-#define USE_SPEAKER 0 // for playing SFX
-#if USE_SPEAKER
-  #include <Arduino.h>
-  #include <esp32-hal-ledc.h>
-  const int AUDIO_PIN = A0;   // A0 JST SIG → STEMMA white wire
-#endif
-
 // ===================== Pins / Qualia =====================
 #define I2S_PORT      I2S_NUM_0
 #define PIN_BCLK      SCK     // Qualia SCK header pin
-#define PIN_WS        MOSI      // LRCLK
+#define PIN_WS        A0      // LRCLK
 #define PIN_SD        A1      // DATA
 
 // ======= QUALIA DISPLAY WIRING (same as your project) =======
@@ -70,8 +48,6 @@ const uint16_t COL_ERR = 0xF800;    // red
 #define HOP_SAMPLES    (SR_HZ * HOP_MS / 1000)   // 160
 
 #define KWS_NBINS      24      // must match header
-
-// Segment-level VAD (used only to pick start/end for extraction)
 #define VAD_MIN_MS     220
 #define VAD_HANG_MS    180
 #define VAD_PREROLL_MS 180
@@ -98,7 +74,6 @@ static inline float hpf_step(HPF* f, float x){
 #include "kws_templates.h"
 KwsBank g_bank[KWS_TOKEN_COUNT];
 
-// Token names must match generator TOKEN_LIST (same order)
 static const char* TOKEN_NAME[KWS_TOKEN_COUNT] = {
   "set","cancel","add","minus","stop","timer",
   "minute","minutes","hour","hours",
@@ -137,10 +112,6 @@ static void i2s_init_16k_32bit(bool rightChannel)
 
 static inline int16_t sph0645_word_to_s16(int32_t w32) {
   int32_t s18 = (w32 >> 14);
-  if ((w32 != 0) && (w32 != -1) ) {
-    // Serial.println(s18);
-  }
-  
   return (int16_t)(s18 >> 2);
 }
 
@@ -179,7 +150,6 @@ static void frame_feats_24(const int16_t* in, int ofs, float out[KWS_NBINS]) {
   for (int i = 0; i < FRAME_SAMPLES; ++i) mean += in[ofs + i];
   mean /= FRAME_SAMPLES;
   for (int i = 0; i < FRAME_SAMPLES; ++i) wf[i] = ((float)in[ofs + i] - mean) * hann_win[i];
-
   for (int b = 0; b < KWS_NBINS; ++b) {
     float s_prev = 0.0f;
     float s_prev2 = 0.0f;
@@ -281,7 +251,6 @@ static void show_detect(const char* word, float sim) {
   gfx->setTextSize(2);
   gfx->setCursor(20, 260);
   gfx->printf("dist=%.1f", sim);
-  Serial.printf("[KWS] Detected: %s (dist=%.1f)\n", word ? word : "-", sim);
 }
 
 // ===================== Matching helper =====================
@@ -337,14 +306,6 @@ void setup() {
   Wire.setClock(1000000);
   Serial.begin(115200);
 
-  #if USE_SPEAKER
-    if(!ledcAttach(AUDIO_PIN, 20000, 8)) {
-      Serial.println("Failed to setup LEDC for audio output!");
-    }
-
-    ledcWrite(AUDIO_PIN, 128); // start silent
-  #endif
-
   gfx->begin();
   gfx->setRotation(1);
   expander->pinMode(PCA_TFT_BACKLIGHT, OUTPUT);
@@ -397,8 +358,6 @@ void loop() {
   for (size_t i=0;i<n;++i){
     float s = hpf_step(&g_hpf, (float)s16[i]);
     e += (double)s * (double)s;
-
-    // IMPORTANT: store the same signal used for VAD (filtered) so matching is consistent
     if (s > 32767.0f) s = 32767.0f;
     if (s < -32768.0f) s = -32768.0f;
     pcm_ring[ring_w] = (int16_t)s;
@@ -421,11 +380,7 @@ void loop() {
   // VAD state machine
   bool above = (rms > vad_thresh);
   if (!vad) {
-    if (above) {
-      vad = true;
-      t_on = now;
-      t_last_act = now;
-    }
+    if (above) { vad = true; t_on = now; t_last_act = now; }
   } else {
     if (above) t_last_act = now;
     bool long_enough = (now - t_on) >= VAD_MIN_MS;
@@ -436,8 +391,6 @@ void loop() {
       int nsamp = (int)((dur_ms * SR_HZ) / 1000);
       if (nsamp < FRAME_SAMPLES*3) nsamp = FRAME_SAMPLES*3;
       static int16_t seg[SR_HZ*2];
-
-      // Add some preroll so plosives ("stop") aren't clipped
       int preroll = (int)((VAD_PREROLL_MS * SR_HZ) / 1000);
       int start = (int)ring_w - nsamp - preroll;
       while (start < 0) start += RING_NSAMP;
@@ -448,20 +401,6 @@ void loop() {
       vad = false;
     }
   }
-
-  #if USE_SPEAKER
-    static uint32_t lastBeep = 0;
-    uint32_t nowbeep = millis();
-
-    if (now - lastBeep > 2000) {
-      lastBeep = now;
-
-      // 440 Hz tone for 200 ms
-      ledcWriteTone(AUDIO_PIN, 440);
-      delay(200);
-      ledcWriteTone(AUDIO_PIN, 0);   // 0 = stop tone (duty 0)
-    }
-  #endif
 
   delay(1);
 }

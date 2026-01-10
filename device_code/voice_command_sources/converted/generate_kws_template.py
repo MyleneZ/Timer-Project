@@ -83,16 +83,43 @@ VAD_RMS_ON  = 900.0
 VAD_ZC_RATIO = 0.02
 VAD_MIN_FRAMES = 15
 VAD_POSTROLL_FR = 8
+VAD_PREROLL_FR = int(round(180 / HOP_MS))  # match device preroll (~180 ms)
+
+# Some repos keep only plural folders (minutes/hours) but firmware expects
+# both singular+plural tokens. If a token folder is missing, try these aliases.
+TOKEN_DIR_ALIASES = {
+  "minute": ["minutes"],
+  "minutes": ["minute"],
+  "hour": ["hours"],
+  "hours": ["hour"],
+}
 
 TOKEN_LIST = [
   "set","cancel","add","minus","stop","timer",
-  "minute","minutes","hour","hours", "a",
+  "minute","minutes","hour","hours",
   "one","two","three","four","five","six","seven","eight","nine",
   "ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen",
   "twenty","thirty","forty","fifty","sixty","seventy","eighty","ninety",
   "baking","cooking","break","homework","exercise","workout"
 ]
 TOKEN_TO_ID = {name: i for i, name in enumerate(TOKEN_LIST)}
+
+def hpf_1pole(x, a=0.995):
+  """Simple 1-pole HPF to match on-device DC/rumble cut.
+  y[n] = x[n] - x[n-1] + a*y[n-1]
+  """
+  if x.size == 0:
+    return x
+  y = np.empty_like(x, dtype=np.float32)
+  z = 0.0
+  x1 = 0.0
+  for i in range(x.shape[0]):
+    xi = float(x[i])
+    yi = (xi - x1) + a * z
+    y[i] = yi
+    z = yi
+    x1 = xi
+  return y
 
 def hann(N):
   n = np.arange(N, dtype=np.float32)
@@ -128,6 +155,9 @@ def mono16k(wav):
     down = int(sr // g)
     x = resample_poly(x, up, down).astype(np.float32)
 
+  # Match device pipeline: HPF before VAD/feature extraction.
+  x = hpf_1pole(x)
+
   return x
 
 def frame_sig(x):
@@ -153,7 +183,8 @@ def vad_mask(frames):
 
 def goertzel_frame(frame):
   """Compute 24-bin Goertzel log-power for one frame."""
-  x = frame * HANN
+  # Match device: remove per-frame mean, then apply Hann.
+  x = (frame - frame.mean()) * HANN
   out = np.zeros((KWS_NBINS,), dtype=np.float32)
   for b in range(KWS_NBINS):
     w = GOERTZEL_W[b]
@@ -176,23 +207,17 @@ def extract_feats_from_wav(wav_path):
     return None
 
   vad = vad_mask(frames)
-  if vad.sum() < 6:   # was 15
-    # fall back: take center 0.6 s so single short words still pass
-    center = frames.shape[0] // 2
-    half = 30  # ~0.3 s on each side at 10 ms hop
-    use_frames = frames[max(0, center-half):min(frames.shape[0], center+half)]
-  else:
-    last_idx = np.where(vad)[0][-1]
-    start_idx = np.where(vad)[0][0]
-    end_idx = min(frames.shape[0], last_idx + VAD_POSTROLL_FR + 1)
+  if vad.sum() >= 6:
+    first = int(np.where(vad)[0][0])
+    last = int(np.where(vad)[0][-1])
+    start_idx = max(0, first - VAD_PREROLL_FR)
+    end_idx = min(frames.shape[0], last + VAD_POSTROLL_FR + 1)
     use_frames = frames[start_idx:end_idx]
-
-
-  # extend with small postroll like the device
-  last_idx = np.where(vad)[0][-1] if vad.any() else -1
-  end_idx = min(frames.shape[0], last_idx + VAD_POSTROLL_FR + 1)
-  start_idx = np.where(vad)[0][0] if vad.any() else 0
-  use_frames = frames[start_idx:end_idx]
+  else:
+    # Fall back: center window (~0.6s) so short/quiet words still produce templates.
+    center = frames.shape[0] // 2
+    half = 30  # ~0.3 s each side at 10 ms hop
+    use_frames = frames[max(0, center - half):min(frames.shape[0], center + half)]
 
   # compute features per frame
   feats = np.stack([goertzel_frame(f) for f in use_frames], axis=0)  # [T, 24]
@@ -220,6 +245,8 @@ def write_header(out_path, bank):
     f.write("#pragma once\n#include <Arduino.h>\n\n")
     f.write("// Must match firmware constants:\n")
     f.write("#define KWS_NBINS 24\n\n")
+    f.write(f"#define KWS_TOKEN_COUNT {len(TOKEN_LIST)}\n")
+    f.write("#define KWS_MAX_TEMPLATES 3\n\n")
 
     # Emit per-template arrays
     tpl_names = []
@@ -269,7 +296,7 @@ def write_header(out_path, bank):
     f.write("}\n\n")
 
     f.write("static void kws_load_from_progmem() {\n")
-    f.write("  for (int tid=0; tid<"+str(len(TOKEN_LIST))+"; ++tid) {\n")
+    f.write("  for (int tid=0; tid<KWS_TOKEN_COUNT; ++tid) {\n")
     f.write("    uint16_t count = pgm_read_word(&kws_token_counts[tid]);\n")
     f.write("    KwsBank &bk = g_bank[tid];\n")
     f.write("    bk.n = 0;\n")
@@ -310,9 +337,18 @@ def main():
   bank = {}  # tid -> [feats...]
   missing = []
 
+  def wavs_for_token(token: str):
+    """Return (wav_paths, used_subdir). Tries token dir + alias dirs."""
+    candidates = [token] + TOKEN_DIR_ALIASES.get(token, [])
+    for sub in candidates:
+      token_dir = os.path.join(args.wavs, sub)
+      wavs = sorted(glob.glob(os.path.join(token_dir, "*.wav")))
+      if wavs:
+        return wavs, sub
+    return [], None
+
   for token in TOKEN_LIST:
-    token_dir = os.path.join(args.wavs, token)
-    wavs = sorted(glob.glob(os.path.join(token_dir, "*.wav")))
+    wavs, used_subdir = wavs_for_token(token)
     if not wavs:
       missing.append(token)
       continue
@@ -323,6 +359,9 @@ def main():
         continue
       tid = TOKEN_TO_ID[token]
       bank.setdefault(tid, []).append(feats)
+
+    if used_subdir and used_subdir != token:
+      print(f"[INFO] Using '{used_subdir}/' WAVs for token '{token}'")
 
   if missing:
     print("[INFO] No WAVs for:", ", ".join(missing))
