@@ -91,7 +91,7 @@ python3 generate_kws_template.py --wavs wavs --out kws_templates.h
     - [X] Display
     - [-] Speaker
     - [X] Microphone
-    - [ ] Case
+    - [-] Case
 - Software:
     - [ ] Timer UI
         - [-] Custom Font
