@@ -30,6 +30,18 @@
 #define USE_SPEAKER   1   // Enable speaker output
 #define USE_BLE       1   // Enable BLE for Nicla Voice communication
 
+// If your speaker is driven by an analog/PWM input (common on STEMMA speaker amps),
+// MP3->I2S output will sound awful. Default to PWM-based SFX.
+#define USE_MP3_SFX   0   // 0 = PWM beep SFX (recommended), 1 = MP3 over I2S
+
+// ======================= AUDIO LEVELS =======================
+// MP3 SFX on small Class-D amps can clip easily. Start conservative.
+static float g_sfx_gain = 0.12f;  // 0.0 .. 1.0
+
+// PWM loudness control (only used when USE_MP3_SFX == 0)
+// With 8-bit resolution, duty is 0..255. Keep conservative to avoid painful output.
+static uint8_t g_pwm_duty = 32;
+
 // ======================= DEMO MODE =======================
 // Set to true to simulate Nicla Voice commands for demonstration
 // When false, operates normally waiting for BLE commands from Nicla Voice
@@ -65,18 +77,25 @@ static uint32_t demo_start_ms = 0;
 
 // ======================= I2S SPEAKER CONFIG =======================
 #if USE_SPEAKER
-  #include <AudioFileSourcePROGMEM.h>
-  #include <AudioGeneratorMP3.h>
-  #include <AudioOutputI2S.h>
-  #include "sounds/sfx_mp3_data.h"
+  #include <esp32-hal-ledc.h>
 
-  #define I2S_SPK_BCLK  SCK
-  #define I2S_SPK_LRC   MOSI
-  #define I2S_SPK_DOUT  A0
+  // STEMMA speaker JST (SIG is A0). We'll use LEDC PWM for SFX + alarm tones.
+  static const int AUDIO_PIN = A0;
 
-  static AudioGeneratorMP3* g_mp3 = nullptr;
-  static AudioFileSourcePROGMEM* g_src = nullptr;
-  static AudioOutputI2S* g_out = nullptr;
+  #if USE_MP3_SFX
+    #include <AudioFileSourcePROGMEM.h>
+    #include <AudioGeneratorMP3.h>
+    #include <AudioOutputI2S.h>
+    #include "sounds/sfx_mp3_data.h"
+
+    #define I2S_SPK_BCLK  SCK
+    #define I2S_SPK_LRC   MOSI
+    #define I2S_SPK_DOUT  A0
+
+    static AudioGeneratorMP3* g_mp3 = nullptr;
+    static AudioFileSourcePROGMEM* g_src = nullptr;
+    static AudioOutputI2S* g_out = nullptr;
+  #endif
 #endif
 
 // ======================= DISPLAY CONFIG =======================
@@ -328,7 +347,33 @@ enum SfxId {
 
 static bool sfx_playing = false;
 
+struct BeepStep {
+  uint16_t freq_hz;   // 0 = silence
+  uint16_t dur_ms;    // 0 = end
+};
+
+static const BeepStep SFX_PWRON[] = {
+  { 880,  70 }, { 0, 25 }, { 1175, 70 }, { 0, 25 }, { 1568, 90 }, { 0, 0 }
+};
+static const BeepStep SFX_OK[] = {
+  { 1175, 60 }, { 0, 25 }, { 1568, 70 }, { 0, 0 }
+};
+static const BeepStep SFX_CANCEL[] = {
+  { 784,  80 }, { 0, 25 }, { 587, 120 }, { 0, 0 }
+};
+static const BeepStep SFX_RES[] = {
+  { 988,  60 }, { 0, 25 }, { 1319, 70 }, { 0, 0 }
+};
+static const BeepStep SFX_TOGGLE[] = {
+  { 1319, 55 }, { 0, 20 }, { 988, 55 }, { 0, 0 }
+};
+
+static const BeepStep* g_beep_steps = nullptr;
+static uint8_t g_beep_idx = 0;
+static uint32_t g_beep_next_ms = 0;
+
 static void sfx_stop() {
+  #if USE_MP3_SFX
   if (g_mp3) {
     if (g_mp3->isRunning()) g_mp3->stop();
     delete g_mp3;
@@ -338,30 +383,85 @@ static void sfx_stop() {
     delete g_src;
     g_src = nullptr;
   }
+  #endif
+
+  // Stop PWM tone output
+  ledcWriteTone(AUDIO_PIN, 0);
+  ledcWrite(AUDIO_PIN, 0);
+  g_beep_steps = nullptr;
+  g_beep_idx = 0;
   sfx_playing = false;
 }
 
 static void sfx_play(int idx) {
+  sfx_stop();
+
+  #if USE_MP3_SFX
   if (SFX_MP3_COUNT == 0) return;
   if (idx < 0 || idx >= (int)SFX_MP3_COUNT) return;
 
-  sfx_stop();
+  if (g_out) {
+    if (g_sfx_gain < 0.0f) g_sfx_gain = 0.0f;
+    if (g_sfx_gain > 1.0f) g_sfx_gain = 1.0f;
+    g_out->SetGain(g_sfx_gain);
+  }
+
   g_mp3 = new AudioGeneratorMP3();
   g_src = new AudioFileSourcePROGMEM(SFX_MP3_LIST[idx].data, SFX_MP3_LIST[idx].len);
-  
   if (g_mp3->begin(g_src, g_out)) {
     sfx_playing = true;
     Serial.printf("[SFX] Playing: %s\n", SFX_MP3_LIST[idx].name);
   }
+  #else
+  // PWM-based beep SFX (reliable on analog/PWM speaker input)
+  const BeepStep* steps = nullptr;
+  switch (idx) {
+    case SFX_POWER_ON: steps = SFX_PWRON; break;
+    case SFX_CONFIRM: steps = SFX_OK; break;
+    case SFX_PAUSE: steps = SFX_CANCEL; break;
+    case SFX_RESUME: steps = SFX_RES; break;
+    case SFX_PAUSE_RESUME: steps = SFX_TOGGLE; break;
+    default: steps = SFX_OK; break;
+  }
+  g_beep_steps = steps;
+  g_beep_idx = 0;
+  g_beep_next_ms = millis();
+  sfx_playing = true;
+  #endif
 }
 
 static void sfx_loop() {
+  #if USE_MP3_SFX
   if (g_mp3 && g_mp3->isRunning()) {
     if (!g_mp3->loop()) {
       g_mp3->stop();
       sfx_playing = false;
     }
   }
+  #else
+  if (!sfx_playing || !g_beep_steps) return;
+
+  const uint32_t now = millis();
+  if ((int32_t)(now - g_beep_next_ms) < 0) return;
+
+  const BeepStep step = g_beep_steps[g_beep_idx++];
+  if (step.dur_ms == 0) {
+    ledcWriteTone(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_PIN, 0);
+    sfx_playing = false;
+    g_beep_steps = nullptr;
+    return;
+  }
+
+  if (step.freq_hz == 0) {
+    ledcWriteTone(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_PIN, 0);
+  } else {
+    ledcWriteTone(AUDIO_PIN, step.freq_hz);
+    ledcWrite(AUDIO_PIN, g_pwm_duty);
+  }
+  g_beep_next_ms = now + step.dur_ms;
+  #endif
 }
 
 // Simple alarm tone using PWM (backup if MP3 fails)
@@ -371,7 +471,8 @@ static void play_alarm_tone(bool enable) {
   static uint32_t last_toggle = 0;
   
   if (!enable) {
-    ledcWriteTone(A0, 0);
+    ledcWriteTone(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_PIN, 0);
     alarm_state = false;
     return;
   }
@@ -380,7 +481,8 @@ static void play_alarm_tone(bool enable) {
   if (now - last_toggle > 500) {
     last_toggle = now;
     alarm_state = !alarm_state;
-    ledcWriteTone(A0, alarm_state ? 880 : 0);  // 880Hz beep
+    ledcWriteTone(AUDIO_PIN, alarm_state ? 880 : 0);  // 880Hz beep
+    ledcWrite(AUDIO_PIN, alarm_state ? g_pwm_duty : 0);
   }
 }
 #endif
@@ -689,10 +791,23 @@ void setup() {
   }
 
   #if USE_SPEAKER
-  // Initialize I2S audio output
+  #if !USE_MP3_SFX
+  // Initialize PWM audio output on A0
+  // (Used for alarm + default SFX). We keep a reasonably high base freq.
+  // NOTE: ESP32 Arduino core 3.x changed LEDC APIs; this matches speaker_test.ino.
+  if (!ledcAttach(AUDIO_PIN, 10000, 8)) {
+    Serial.println("[BOOT] Audio PWM attach failed");
+  }
+  ledcWriteTone(AUDIO_PIN, 0);
+  ledcWrite(AUDIO_PIN, 0);
+  #endif
+
+  #if USE_MP3_SFX
+  // Optional: MP3 SFX over I2S (only if your speaker amp is I2S-driven).
   g_out = new AudioOutputI2S();
   g_out->SetPinout(I2S_SPK_BCLK, I2S_SPK_LRC, I2S_SPK_DOUT);
-  g_out->SetGain(0.5f);
+  g_out->SetGain(g_sfx_gain);
+  #endif
   
   Serial.println("[BOOT] Audio initialized");
   
@@ -1153,6 +1268,23 @@ void loop() {
       Serial.println("  add <name> <seconds> - Add time");
       Serial.println("  stop                 - Stop all alarms");
       Serial.println("  status               - Show timer status");
+      Serial.println("  vol <0-100>          - Set SFX volume (PWM loudness; MP3 gain if enabled)\n");
+    } else if (cmd.startsWith("vol ")) {
+      int pct = cmd.substring(4).toInt();
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      g_sfx_gain = (float)pct / 100.0f;
+      #if USE_SPEAKER && USE_MP3_SFX
+      if (g_out) g_out->SetGain(g_sfx_gain);
+      #endif
+
+      // PWM path: map 0..100% to a safe duty range.
+      // Cap at ~40% duty to avoid overdriving small amps/speakers.
+      uint16_t duty = (uint16_t)((pct * 255) / 100);
+      if (duty > 102) duty = 102;
+      g_pwm_duty = (uint8_t)duty;
+      Serial.printf("[SFX] Gain set to %.2f (%d%%)\n", g_sfx_gain, pct);
+      Serial.printf("[SFX] PWM duty=%u  (and MP3 gain=%.2f if enabled)\n", (unsigned)g_pwm_duty, g_sfx_gain);
     }
   }
   

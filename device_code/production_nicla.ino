@@ -1,49 +1,40 @@
 /*
- * Timer Device - Nicla Voice Production Firmware
- * 
- * Hardware:
- *   - Arduino Nicla Voice (with NDP120 for voice recognition)
- * 
- * This firmware runs on the Nicla Voice and:
- *   1. Performs on-device keyword spotting using the NDP120
- *   2. Parses voice commands into structured timer commands
- *   3. Sends commands to the Qualia ESP32-S3 via BLE
- * 
- * Voice Command Patterns:
- *   - "Set [timer_name] timer [number] minute(s)/hour(s)"
- *   - "Cancel [timer_name] timer"
- *   - "Add [number] minute(s)/hour(s) to [timer_name] timer"
- *   - "Minus [number] minute(s)/hour(s) from [timer_name] timer"
- *   - "Stop" (stops all alarms)
+ * Timer Device - Nicla Voice Production Firmware (FIXED)
+ *
+ * Role split:
+ *  - Nicla Voice: BLE Central (client) + on-device KWS via NDP120
+ *  - Qualia ESP32-S3: BLE Peripheral (server) advertising Nordic UART Service (NUS)
+ *
+ * This sketch:
+ *  1) Loads your NDP120 speech model from external flash
+ *  2) Receives recognition events as string labels via NDP.onEvent(cb)
+ *  3) Converts labels -> token indices
+ *  4) Parses tokens into a TimerCommand
+ *  5) Sends TimerCommand to Qualia by writing to NUS RX characteristic (6E400002...)
  */
 
 #include <Arduino.h>
 #include <NDP.h>
 #include <ArduinoBLE.h>
+#include <Nicla_System.h>   // for nicla::leds + color constants
 
-// ======================= CONFIGURATION =======================
-#define DEBUG_SERIAL      1     // Enable debug output
-#define LED_FEEDBACK      1     // Enable LED feedback for voice detection
-#define BLE_CONNECT_TIMEOUT_MS 30000  // 30 seconds to connect
+// ======================= CONFIG =======================
+#define DEBUG_SERIAL 1
+#define LED_FEEDBACK 1
 
-// ======================= NDP120 MODEL =======================
-// The NDP120 model should be trained with these keywords
-// Model file: timer_voice_model.bin (to be loaded via NDP library)
+#define BLE_SCAN_RESTART_MS 2500
+#define BLE_CONNECT_TIMEOUT_MS 20000
+#define COMMAND_TIMEOUT_MS 1500
+#define MAX_TOKENS 10
 
-// ======================= NORDIC UART SERVICE =======================
-// UUIDs must match the Qualia's production.ino
-#define SERVICE_UUID        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+// ======================= NUS UUIDs (MUST MATCH QUALIA) =======================
+#define SERVICE_UUID             "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_RX   "6E400002-B5A3-F393-E0A9-E50E24DCCA9E" // Qualia RX (we WRITE here)
+#define CHARACTERISTIC_UUID_TX   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // Qualia TX (optional notify)
 
-BLEService uartService(SERVICE_UUID);
-BLECharacteristic txCharacteristic(CHARACTERISTIC_UUID_TX, BLEWrite | BLEWriteWithoutResponse, 64);
-BLECharacteristic rxCharacteristic(CHARACTERISTIC_UUID_RX, BLENotify, 64);
+static const char* TARGET_DEVICE_NAME = "TimerDevice"; // Qualia advertises NimBLEDevice::init("TimerDevice")
 
-bool bleConnected = false;
-String targetDeviceName = "TimerDevice";
-
-// ======================= TOKEN IDS (must match kws_templates.h) =======================
+// ======================= TOKEN IDS (must match your model/templates) =======================
 enum TokenId : uint8_t {
   TOK_SET = 0,
   TOK_CANCEL = 1,
@@ -94,26 +85,23 @@ enum TokenId : uint8_t {
   TOK_UNKNOWN = 255
 };
 
-// Token name lookup (for debug)
+// Token name lookup (what your NDP model should output as labels)
 static const char* TOKEN_NAMES[] = {
   "set", "cancel", "add", "minus", "stop", "timer",
   "minute", "minutes", "hour", "hours",
   "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-  "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", 
+  "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
   "sixteen", "seventeen", "eighteen", "nineteen",
   "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
   "baking", "cooking", "break", "homework", "exercise", "workout"
 };
-const int TOKEN_COUNT = sizeof(TOKEN_NAMES) / sizeof(TOKEN_NAMES[0]);
+static const int TOKEN_COUNT = (int)(sizeof(TOKEN_NAMES) / sizeof(TOKEN_NAMES[0]));
 
-// Timer name strings
-static const char* TIMER_NAMES[] = {
-  "Baking", "Cooking", "Break", "Homework", "Exercise", "Workout"
-};
+// Timer name strings (must match what Qualia expects)
+static const char* TIMER_NAMES[] = { "Baking", "Cooking", "Break", "Homework", "Exercise", "Workout" };
 static const int TIMER_NAME_COUNT = 6;
 
-// ======================= COMMAND PARSING STATE =======================
-#define MAX_TOKENS 10
+// ======================= PARSE STATE =======================
 struct ParseState {
   uint8_t tokens[MAX_TOKENS];
   int count;
@@ -121,10 +109,7 @@ struct ParseState {
   bool commandComplete;
 };
 
-static ParseState parseState = {{0}, 0, 0, false};
-
-// Timeout to consider a command complete (ms after last token)
-#define COMMAND_TIMEOUT_MS 1500
+static ParseState parseState = { {0}, 0, 0, false };
 
 // ======================= COMMAND OUTPUT =======================
 enum CommandType {
@@ -142,131 +127,192 @@ struct TimerCommand {
   uint32_t durationSeconds;
 };
 
+// ======================= BLE STATE (CENTRAL) =======================
+static bool bleConnected = false;
+static BLEDevice connectedPeripheral;
+static BLECharacteristic remoteRxChar; // write to Qualia RX (6E400002...)
+static BLECharacteristic remoteTxChar; // optional notify
+
+static uint32_t lastScanRestart = 0;
+
+// ======================= LED FEEDBACK =======================
+#if LED_FEEDBACK
+static void ledFlash(const int colorConst, int ms = 120) {
+  nicla::leds.begin();
+  nicla::leds.setColor(colorConst);
+  delay(ms);
+  nicla::leds.setColor(off);
+  nicla::leds.end();
+}
+#endif
+
+// ======================= STRING UTIL =======================
+static void strToLower(char* s) {
+  for (; *s; ++s) {
+    if (*s >= 'A' && *s <= 'Z') *s = (char)(*s - 'A' + 'a');
+  }
+}
+
+static void trimSpaces(char* s) {
+  // leading
+  while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+  // copy to start
+  char* p = s;
+  // find end
+  char* end = p + strlen(p);
+  while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+  *end = '\0';
+}
+
+static void extractLabelToken(const char* in, char* out, size_t outSz) {
+  // Many NDP labels look like "NNO:alexa" or "NNO:set"
+  // We take everything after the last ':' if present.
+  const char* lastColon = strrchr(in, ':');
+  const char* start = lastColon ? lastColon + 1 : in;
+
+  strncpy(out, start, outSz - 1);
+  out[outSz - 1] = '\0';
+
+  // normalize
+  strToLower(out);
+  // trim (in-place-ish)
+  // (simple trim for end)
+  size_t n = strlen(out);
+  while (n && (out[n - 1] == '\r' || out[n - 1] == '\n' || out[n - 1] == ' ' || out[n - 1] == '\t')) {
+    out[n - 1] = '\0';
+    n--;
+  }
+  // trim front by shifting if needed
+  size_t i = 0;
+  while (out[i] == ' ' || out[i] == '\t') i++;
+  if (i) memmove(out, out + i, strlen(out + i) + 1);
+}
+
+// Map recognized label -> token index
+static int tokenIndexFromLabel(const char* label) {
+  char norm[32];
+  extractLabelToken(label, norm, sizeof(norm));
+
+  for (int i = 0; i < TOKEN_COUNT; i++) {
+    if (strcmp(norm, TOKEN_NAMES[i]) == 0) return i;
+  }
+  return -1;
+}
+
 // ======================= NUMBER PARSING =======================
-static int parseNumber(uint8_t* tokens, int start, int count) {
+static int parseNumber(const uint8_t* tokens, int start, int count) {
   if (start >= count) return -1;
-  
+
   int result = 0;
   int i = start;
-  
-  // Check for tens place (twenty, thirty, etc.)
+
   if (tokens[i] >= TOK_TWENTY && tokens[i] <= TOK_NINETY) {
     int tens = (tokens[i] - TOK_TWENTY + 2) * 10;  // 20, 30, 40...
     result = tens;
     i++;
-    
-    // Check for ones place
+
     if (i < count && tokens[i] >= TOK_ONE && tokens[i] <= TOK_NINE) {
       result += (tokens[i] - TOK_ONE + 1);
       i++;
     }
-  }
-  // Check for teens or single digits (1-19)
-  else if (tokens[i] >= TOK_ONE && tokens[i] <= TOK_NINETEEN) {
+  } else if (tokens[i] >= TOK_ONE && tokens[i] <= TOK_NINETEEN) {
     result = tokens[i] - TOK_ONE + 1;
     i++;
   }
-  
+
   return (result > 0) ? result : -1;
 }
 
 // ======================= TIMER NAME PARSING =======================
-static const char* parseTimerName(uint8_t* tokens, int start, int count) {
+static const char* parseTimerName(const uint8_t* tokens, int start, int count) {
   if (start >= count) return "Timer";
-  
   uint8_t tok = tokens[start];
   if (tok >= TOK_BAKING && tok <= TOK_WORKOUT) {
-    return TIMER_NAMES[tok - TOK_BAKING];
+    int idx = (int)(tok - TOK_BAKING);
+    if (idx >= 0 && idx < TIMER_NAME_COUNT) return TIMER_NAMES[idx];
   }
-  
-  return "Timer";  // Default name
+  return "Timer";
 }
 
 // ======================= COMMAND PARSING =======================
-static TimerCommand parseCommand(ParseState& state) {
-  TimerCommand cmd = {CMD_NONE, "", 0};
-  
+static TimerCommand parseCommand(const ParseState& state) {
+  TimerCommand cmd;
+  cmd.type = CMD_NONE;
+  cmd.name[0] = '\0';
+  cmd.durationSeconds = 0;
+
   if (state.count == 0) return cmd;
-  
-  uint8_t firstToken = state.tokens[0];
-  
-  // "stop" - simple single-word command
+
+  const uint8_t firstToken = state.tokens[0];
+
   if (firstToken == TOK_STOP) {
     cmd.type = CMD_STOP;
     return cmd;
   }
-  
-  // "set [name] timer [number] minute(s)/hour(s)"
+
   if (firstToken == TOK_SET) {
     cmd.type = CMD_SET;
     int idx = 1;
-    
-    // Optional timer name
+
     const char* name = parseTimerName(state.tokens, idx, state.count);
     strncpy(cmd.name, name, 15);
     cmd.name[15] = '\0';
-    
-    // Skip timer name token if present
-    if (state.tokens[idx] >= TOK_BAKING && state.tokens[idx] <= TOK_WORKOUT) {
-      idx++;
-    }
-    
-    // Skip "timer" keyword if present
-    if (idx < state.count && state.tokens[idx] == TOK_TIMER) {
-      idx++;
-    }
-    
-    // Parse number
+
+    // If name token present, consume it
+    if (idx < state.count && state.tokens[idx] >= TOK_BAKING && state.tokens[idx] <= TOK_WORKOUT) idx++;
+
+    // Optional "timer"
+    if (idx < state.count && state.tokens[idx] == TOK_TIMER) idx++;
+
+    // Number
     int number = parseNumber(state.tokens, idx, state.count);
-    if (number < 0) number = 5;  // Default 5 minutes
-    
-    // Skip number tokens
-    while (idx < state.count && 
-           ((state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINETY) ||
-            state.tokens[idx] == TOK_TIMER)) {
-      idx++;
-    }
-    
-    // Check for minutes or hours
-    bool isHours = false;
+    if (number < 0) number = 5;
+
+    // Consume number tokens (tens + optional ones OR 1..19)
     if (idx < state.count) {
-      if (state.tokens[idx] == TOK_HOUR || state.tokens[idx] == TOK_HOURS) {
-        isHours = true;
+      if (state.tokens[idx] >= TOK_TWENTY && state.tokens[idx] <= TOK_NINETY) {
+        idx++;
+        if (idx < state.count && state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINE) idx++;
+      } else if (state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINETEEN) {
+        idx++;
       }
     }
-    
-    cmd.durationSeconds = number * (isHours ? 3600 : 60);
+
+    // Units
+    bool isHours = false;
+    if (idx < state.count && (state.tokens[idx] == TOK_HOUR || state.tokens[idx] == TOK_HOURS)) {
+      isHours = true;
+    }
+    cmd.durationSeconds = (uint32_t)number * (isHours ? 3600UL : 60UL);
     return cmd;
   }
-  
-  // "cancel [name] timer"
+
   if (firstToken == TOK_CANCEL) {
     cmd.type = CMD_CANCEL;
-    int idx = 1;
-    
-    const char* name = parseTimerName(state.tokens, idx, state.count);
+    const char* name = parseTimerName(state.tokens, 1, state.count);
     strncpy(cmd.name, name, 15);
     cmd.name[15] = '\0';
-    
     return cmd;
   }
-  
-  // "add [number] minute(s)/hour(s) to [name] timer"
-  if (firstToken == TOK_ADD) {
-    cmd.type = CMD_ADD;
+
+  if (firstToken == TOK_ADD || firstToken == TOK_MINUS) {
+    cmd.type = (firstToken == TOK_ADD) ? CMD_ADD : CMD_MINUS;
+
     int idx = 1;
-    
-    // Parse number first
     int number = parseNumber(state.tokens, idx, state.count);
     if (number < 0) number = 1;
-    
-    // Skip number tokens
-    while (idx < state.count && 
-           state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINETY) {
-      idx++;
+
+    // Consume number tokens properly
+    if (idx < state.count) {
+      if (state.tokens[idx] >= TOK_TWENTY && state.tokens[idx] <= TOK_NINETY) {
+        idx++;
+        if (idx < state.count && state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINE) idx++;
+      } else if (state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINETEEN) {
+        idx++;
+      }
     }
-    
-    // Check for minutes or hours
+
+    // Units
     bool isHours = false;
     if (idx < state.count) {
       if (state.tokens[idx] == TOK_HOUR || state.tokens[idx] == TOK_HOURS) {
@@ -276,8 +322,8 @@ static TimerCommand parseCommand(ParseState& state) {
         idx++;
       }
     }
-    
-    // Find timer name (may be after "to")
+
+    // Find timer name anywhere after that (robust to “to/from” words you might add later)
     const char* name = "Timer";
     for (int i = idx; i < state.count; i++) {
       if (state.tokens[i] >= TOK_BAKING && state.tokens[i] <= TOK_WORKOUT) {
@@ -285,78 +331,42 @@ static TimerCommand parseCommand(ParseState& state) {
         break;
       }
     }
+
     strncpy(cmd.name, name, 15);
     cmd.name[15] = '\0';
-    
-    cmd.durationSeconds = number * (isHours ? 3600 : 60);
+
+    cmd.durationSeconds = (uint32_t)number * (isHours ? 3600UL : 60UL);
     return cmd;
   }
-  
-  // "minus [number] minute(s)/hour(s) from [name] timer"
-  if (firstToken == TOK_MINUS) {
-    cmd.type = CMD_MINUS;
-    int idx = 1;
-    
-    int number = parseNumber(state.tokens, idx, state.count);
-    if (number < 0) number = 1;
-    
-    while (idx < state.count && 
-           state.tokens[idx] >= TOK_ONE && state.tokens[idx] <= TOK_NINETY) {
-      idx++;
-    }
-    
-    bool isHours = false;
-    if (idx < state.count) {
-      if (state.tokens[idx] == TOK_HOUR || state.tokens[idx] == TOK_HOURS) {
-        isHours = true;
-        idx++;
-      } else if (state.tokens[idx] == TOK_MINUTE || state.tokens[idx] == TOK_MINUTES) {
-        idx++;
-      }
-    }
-    
-    const char* name = "Timer";
-    for (int i = idx; i < state.count; i++) {
-      if (state.tokens[i] >= TOK_BAKING && state.tokens[i] <= TOK_WORKOUT) {
-        name = TIMER_NAMES[state.tokens[i] - TOK_BAKING];
-        break;
-      }
-    }
-    strncpy(cmd.name, name, 15);
-    cmd.name[15] = '\0';
-    
-    cmd.durationSeconds = number * (isHours ? 3600 : 60);
-    return cmd;
-  }
-  
+
   return cmd;
 }
 
-// ======================= BLE COMMUNICATION =======================
-static void sendCommand(TimerCommand& cmd) {
-  if (!bleConnected) {
+// ======================= BLE SEND =======================
+static void sendCommandToQualia(const TimerCommand& cmd) {
+  if (!bleConnected || !connectedPeripheral || !remoteRxChar) {
     #if DEBUG_SERIAL
-    Serial.println("[BLE] Not connected, cannot send command");
+    Serial.println("[BLE] Not connected or RX char missing; cannot send.");
     #endif
     return;
   }
-  
+
   char buffer[64];
-  
+
   switch (cmd.type) {
     case CMD_SET:
-      snprintf(buffer, sizeof(buffer), "CMD:SET,NAME:%s,DURATION:%lu", 
+      snprintf(buffer, sizeof(buffer), "CMD:SET,NAME:%s,DURATION:%lu",
                cmd.name, (unsigned long)cmd.durationSeconds);
       break;
     case CMD_CANCEL:
       snprintf(buffer, sizeof(buffer), "CMD:CANCEL,NAME:%s", cmd.name);
       break;
     case CMD_ADD:
-      snprintf(buffer, sizeof(buffer), "CMD:ADD,NAME:%s,DURATION:%lu", 
+      snprintf(buffer, sizeof(buffer), "CMD:ADD,NAME:%s,DURATION:%lu",
                cmd.name, (unsigned long)cmd.durationSeconds);
       break;
     case CMD_MINUS:
-      snprintf(buffer, sizeof(buffer), "CMD:MINUS,NAME:%s,DURATION:%lu", 
+      snprintf(buffer, sizeof(buffer), "CMD:MINUS,NAME:%s,DURATION:%lu",
                cmd.name, (unsigned long)cmd.durationSeconds);
       break;
     case CMD_STOP:
@@ -365,301 +375,318 @@ static void sendCommand(TimerCommand& cmd) {
     default:
       return;
   }
-  
+
   #if DEBUG_SERIAL
-  Serial.printf("[BLE] Sending: %s\n", buffer);
+  Serial.print("[BLE] -> ");
+  Serial.println(buffer);
   #endif
-  
-  txCharacteristic.writeValue(buffer, strlen(buffer));
-}
 
-// ======================= LED FEEDBACK =======================
-#if LED_FEEDBACK
-static void blinkLED(int pin, int times, int delayMs) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(pin, HIGH);
-    delay(delayMs);
-    digitalWrite(pin, LOW);
-    delay(delayMs);
+  // Prefer Write Without Response if supported, otherwise fallback to Write.
+  bool ok = false;
+  if (remoteRxChar.canWriteWithoutResponse()) {
+    ok = remoteRxChar.writeValue((const uint8_t*)buffer, (int)strlen(buffer), false);
+  } else if (remoteRxChar.canWrite()) {
+    ok = remoteRxChar.writeValue((const uint8_t*)buffer, (int)strlen(buffer));
   }
+
+  #if LED_FEEDBACK
+  if (ok) ledFlash(blue, 90);
+  else    ledFlash(red, 140);
+  #endif
+
+  #if DEBUG_SERIAL
+  Serial.println(ok ? "[BLE] Write OK" : "[BLE] Write FAILED");
+  #endif
 }
 
-static void setStatusLED(bool listening, bool detected) {
-  if (detected) {
-    digitalWrite(LEDB, LOW);   // Blue LED on for detection
-    digitalWrite(LEDG, HIGH);
-    digitalWrite(LEDR, HIGH);
-  } else if (listening) {
-    digitalWrite(LEDG, LOW);   // Green LED on when listening
-    digitalWrite(LEDB, HIGH);
-    digitalWrite(LEDR, HIGH);
-  } else {
-    digitalWrite(LEDR, LOW);   // Red LED when not ready
-    digitalWrite(LEDG, HIGH);
-    digitalWrite(LEDB, HIGH);
-  }
-}
-#endif
+// ======================= NDP EVENT HANDLING =======================
+// The NDP library calls this with a label string (like AlexaDemo).
+static volatile bool g_tokenPending = false;
+static volatile int  g_pendingTokenIndex = -1;
 
-// ======================= NDP120 CALLBACK =======================
-// This gets called when the NDP120 detects a keyword
-static volatile bool keywordDetected = false;
-static volatile int detectedKeywordIndex = -1;
+void ndpOnEvent(char* label) {
+  // Convert label -> token idx
+  const int idx = tokenIndexFromLabel(label);
 
-void ndpEventCallback(void) {
-  // NDP120 detected something
-  int idx = NDP.poll();
+  #if DEBUG_SERIAL
+  Serial.print("[NDP] label=");
+  Serial.print(label);
+  Serial.print(" -> idx=");
+  Serial.println(idx);
+  #endif
+
   if (idx >= 0 && idx < TOKEN_COUNT) {
-    detectedKeywordIndex = idx;
-    keywordDetected = true;
+    // Mark pending token for loop() to consume
+    g_pendingTokenIndex = idx;
+    g_tokenPending = true;
   }
-}
 
-// ======================= SETUP =======================
-void setup() {
-  #if DEBUG_SERIAL
-  Serial.begin(115200);
-  while (!Serial && millis() < 3000);  // Wait up to 3 seconds for serial
-  Serial.println("\n[BOOT] Nicla Voice Timer Controller Starting...");
-  #endif
-  
   #if LED_FEEDBACK
-  pinMode(LEDR, OUTPUT);
-  pinMode(LEDG, OUTPUT);
-  pinMode(LEDB, OUTPUT);
-  setStatusLED(false, false);
-  #endif
-  
-  // Initialize NDP120
-  #if DEBUG_SERIAL
-  Serial.println("[NDP] Initializing NDP120...");
-  #endif
-  
-  if (!NDP.begin("timer_voice_model.bin")) {
-    #if DEBUG_SERIAL
-    Serial.println("[NDP] ERROR: Failed to initialize NDP120!");
-    Serial.println("[NDP] Make sure the model file is loaded");
-    #endif
-    
-    // Blink red LED to indicate error
-    #if LED_FEEDBACK
-    while (true) {
-      blinkLED(LEDR, 3, 200);
-      delay(1000);
-    }
-    #endif
-  }
-  
-  NDP.onEvent(ndpEventCallback);
-  
-  #if DEBUG_SERIAL
-  Serial.println("[NDP] NDP120 initialized successfully");
-  #endif
-  
-  // Initialize BLE
-  #if DEBUG_SERIAL
-  Serial.println("[BLE] Initializing BLE...");
-  #endif
-  
-  if (!BLE.begin()) {
-    #if DEBUG_SERIAL
-    Serial.println("[BLE] ERROR: Failed to initialize BLE!");
-    #endif
-    
-    #if LED_FEEDBACK
-    while (true) {
-      blinkLED(LEDR, 5, 100);
-      delay(1000);
-    }
-    #endif
-  }
-  
-  BLE.setLocalName("NiclaVoice_Timer");
-  BLE.setAdvertisedService(uartService);
-  uartService.addCharacteristic(txCharacteristic);
-  uartService.addCharacteristic(rxCharacteristic);
-  BLE.addService(uartService);
-  
-  // Start scanning for the Timer Device (Qualia)
-  BLE.scan();
-  
-  #if DEBUG_SERIAL
-  Serial.println("[BLE] Scanning for TimerDevice...");
-  #endif
-  
-  #if LED_FEEDBACK
-  setStatusLED(true, false);
-  #endif
-  
-  #if DEBUG_SERIAL
-  Serial.println("[BOOT] Ready! Listening for voice commands...");
+  // Quick “heard something” flash (green)
+  ledFlash(green, 40);
   #endif
 }
 
-// ======================= BLE CONNECTION MANAGEMENT =======================
-static BLEDevice peripheral;
+// ======================= TOKEN BUFFERING =======================
+static void pushToken(int tokenIdx) {
+  if (tokenIdx < 0 || tokenIdx >= TOKEN_COUNT) return;
 
-static void connectToTimerDevice() {
-  if (bleConnected) return;
-  
-  BLEDevice found = BLE.available();
-  
-  if (found) {
-    String name = found.localName();
-    
-    #if DEBUG_SERIAL
-    Serial.printf("[BLE] Found device: %s\n", name.c_str());
-    #endif
-    
-    if (name == targetDeviceName) {
-      BLE.stopScan();
-      
-      #if DEBUG_SERIAL
-      Serial.println("[BLE] Connecting to TimerDevice...");
-      #endif
-      
-      if (found.connect()) {
-        #if DEBUG_SERIAL
-        Serial.println("[BLE] Connected!");
-        #endif
-        
-        if (found.discoverAttributes()) {
-          BLECharacteristic characteristic = found.characteristic(CHARACTERISTIC_UUID_RX);
-          if (characteristic) {
-            peripheral = found;
-            bleConnected = true;
-            
-            #if LED_FEEDBACK
-            blinkLED(LEDG, 3, 100);  // Success indication
-            #endif
-            
-            return;
-          }
-        }
-        
-        // Failed to discover services
-        #if DEBUG_SERIAL
-        Serial.println("[BLE] Failed to discover services");
-        #endif
-        found.disconnect();
-      } else {
-        #if DEBUG_SERIAL
-        Serial.println("[BLE] Failed to connect");
-        #endif
-      }
-      
-      // Resume scanning
-      BLE.scan();
-    }
-  }
-}
-
-static void checkBLEConnection() {
-  if (bleConnected) {
-    if (!peripheral.connected()) {
-      #if DEBUG_SERIAL
-      Serial.println("[BLE] Disconnected from TimerDevice");
-      #endif
-      bleConnected = false;
-      BLE.scan();
-    }
-  }
-}
-
-// ======================= TOKEN PROCESSING =======================
-static void processDetectedToken(int tokenIndex) {
-  if (tokenIndex < 0 || tokenIndex >= TOKEN_COUNT) return;
-  
   #if DEBUG_SERIAL
-  Serial.printf("[KWS] Detected: %s (token %d)\n", TOKEN_NAMES[tokenIndex], tokenIndex);
+  Serial.print("[KWS] token ");
+  Serial.print(tokenIdx);
+  Serial.print(" = ");
+  Serial.println(TOKEN_NAMES[tokenIdx]);
   #endif
-  
-  #if LED_FEEDBACK
-  setStatusLED(true, true);
-  delay(100);
-  setStatusLED(true, false);
-  #endif
-  
-  // Add token to parse state
+
   if (parseState.count < MAX_TOKENS) {
-    parseState.tokens[parseState.count++] = (uint8_t)tokenIndex;
+    parseState.tokens[parseState.count++] = (uint8_t)tokenIdx;
     parseState.lastTokenTime = millis();
-    
-    // Check if this is a single-word command
-    if (tokenIndex == TOK_STOP) {
-      parseState.commandComplete = true;
-    }
+
+    // Single word command completes immediately
+    if (tokenIdx == TOK_STOP) parseState.commandComplete = true;
+  } else {
+    #if DEBUG_SERIAL
+    Serial.println("[KWS] Parse buffer full; dropping token.");
+    #endif
   }
 }
 
-static void processCommandTimeout() {
+static void maybeFinalizeCommand() {
   if (parseState.count == 0) return;
-  
-  uint32_t now = millis();
-  
-  if (parseState.commandComplete || 
-      (now - parseState.lastTokenTime > COMMAND_TIMEOUT_MS)) {
-    
-    // Parse the accumulated tokens
-    TimerCommand cmd = parseCommand(parseState);
-    
+
+  const uint32_t now = millis();
+  if (parseState.commandComplete || (now - parseState.lastTokenTime > COMMAND_TIMEOUT_MS)) {
+    const TimerCommand cmd = parseCommand(parseState);
+
+    #if DEBUG_SERIAL
+    Serial.print("[CMD] type=");
+    Serial.print((int)cmd.type);
+    Serial.print(" name=");
+    Serial.print(cmd.name);
+    Serial.print(" dur=");
+    Serial.println((unsigned long)cmd.durationSeconds);
+    #endif
+
     if (cmd.type != CMD_NONE) {
-      #if DEBUG_SERIAL
-      Serial.printf("[CMD] Type: %d, Name: %s, Duration: %lu\n", 
-                    cmd.type, cmd.name, (unsigned long)cmd.durationSeconds);
-      #endif
-      
-      // Send command via BLE
-      sendCommand(cmd);
-      
-      #if LED_FEEDBACK
-      blinkLED(LEDB, 2, 100);  // Command sent indication
-      #endif
+      sendCommandToQualia(cmd);
     }
-    
-    // Reset parse state
+
+    // reset buffer
     parseState.count = 0;
     parseState.commandComplete = false;
   }
 }
 
-// ======================= MAIN LOOP =======================
+// ======================= BLE CENTRAL CONNECT =======================
+static void startScan() {
+  BLE.stopScan();
+
+  // You can scan by UUID, but not all peripherals include service UUID in adverts.
+  // Scanning generally + matching by localName is most robust.
+  BLE.scan();
+
+  lastScanRestart = millis();
+
+  #if DEBUG_SERIAL
+  Serial.println("[BLE] Scanning...");
+  #endif
+}
+
+static bool connectToQualia() {
+  const uint32_t start = millis();
+
+  while (millis() - start < BLE_CONNECT_TIMEOUT_MS) {
+    BLE.poll();
+
+    BLEDevice found = BLE.available();
+    if (!found) continue;
+
+    const String name = found.localName();
+
+    #if DEBUG_SERIAL
+    Serial.print("[BLE] Found: ");
+    Serial.println(name);
+    #endif
+
+    if (name != TARGET_DEVICE_NAME) continue;
+
+    BLE.stopScan();
+
+    #if DEBUG_SERIAL
+    Serial.println("[BLE] Connecting...");
+    #endif
+
+    if (!found.connect()) {
+      #if DEBUG_SERIAL
+      Serial.println("[BLE] Connect failed.");
+      #endif
+      startScan();
+      return false;
+    }
+
+    if (!found.discoverAttributes()) {
+      #if DEBUG_SERIAL
+      Serial.println("[BLE] discoverAttributes failed.");
+      #endif
+      found.disconnect();
+      startScan();
+      return false;
+    }
+
+    BLEService nus = found.service(SERVICE_UUID);
+    if (!nus) {
+      #if DEBUG_SERIAL
+      Serial.println("[BLE] NUS service not found.");
+      #endif
+      found.disconnect();
+      startScan();
+      return false;
+    }
+
+    BLECharacteristic rx = found.characteristic(CHARACTERISTIC_UUID_RX);
+    if (!rx) {
+      #if DEBUG_SERIAL
+      Serial.println("[BLE] RX characteristic not found (6E400002...).");
+      #endif
+      found.disconnect();
+      startScan();
+      return false;
+    }
+
+    // Optional notify characteristic
+    BLECharacteristic tx = found.characteristic(CHARACTERISTIC_UUID_TX);
+
+    connectedPeripheral = found;
+    remoteRxChar = rx;
+    remoteTxChar = tx;
+    bleConnected = true;
+
+    #if DEBUG_SERIAL
+    Serial.println("[BLE] Connected and ready to write.");
+    #endif
+
+    #if LED_FEEDBACK
+    ledFlash(blue, 120);
+    #endif
+
+    return true;
+  }
+
+  return false;
+}
+
+static void maintainBleConnection() {
+  if (bleConnected) {
+    if (!connectedPeripheral.connected()) {
+      #if DEBUG_SERIAL
+      Serial.println("[BLE] Disconnected.");
+      #endif
+      bleConnected = false;
+      startScan();
+    }
+    return;
+  }
+
+  // If scanning too long, restart scan periodically
+  if (millis() - lastScanRestart > BLE_SCAN_RESTART_MS) {
+    startScan();
+  }
+
+  // Opportunistically attempt connection when we see the device
+  connectToQualia();
+}
+
+// ======================= SETUP / LOOP =======================
+void setup() {
+  #if DEBUG_SERIAL
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000) {}
+  Serial.println("\n[BOOT] Nicla Voice Timer Controller (fixed) starting...");
+  #endif
+
+  #if LED_FEEDBACK
+  nicla::leds.begin();
+  nicla::leds.setColor(red);
+  delay(120);
+  nicla::leds.setColor(off);
+  nicla::leds.end();
+  #endif
+
+  #if DEBUG_SERIAL
+  Serial.println("[NDP] begin(model)...");
+  #endif
+
+  // Ensure timer_voice_model.bin is on external flash.
+  if (!NDP.begin("timer_voice_model.bin")) {
+    #if DEBUG_SERIAL
+    Serial.println("[NDP] ERROR: NDP.begin failed (model missing / flash not formatted / wrong filename).");
+    #endif
+    #if LED_FEEDBACK
+    while (true) { ledFlash(red, 120); delay(400); }
+    #endif
+  }
+
+  // Use AlexaDemo-style callback signature: void cb(char* label)
+  NDP.onEvent(ndpOnEvent);
+
+  #if DEBUG_SERIAL
+  Serial.println("[BLE] begin()...");
+  #endif
+
+  if (!BLE.begin()) {
+    #if DEBUG_SERIAL
+    Serial.println("[BLE] ERROR: BLE.begin failed.");
+    #endif
+    #if LED_FEEDBACK
+    while (true) { ledFlash(red, 120); delay(400); }
+    #endif
+  }
+
+  BLE.setLocalName("NiclaVoice_Timer");
+  startScan();
+
+  #if DEBUG_SERIAL
+  Serial.println("[BOOT] Ready. Say commands once connected to Qualia.");
+  Serial.println("       Serial sim:  sim set | sim baking | sim five | sim minutes");
+  #endif
+}
+
 void loop() {
-  // BLE connection management
+  // Drive BLE and NDP internals
   BLE.poll();
-  
-  if (!bleConnected) {
-    connectToTimerDevice();
-  } else {
-    checkBLEConnection();
+  NDP.poll();
+
+  maintainBleConnection();
+
+  // Consume pending token recognized from NDP callback
+  if (g_tokenPending) {
+    g_tokenPending = false;
+    pushToken(g_pendingTokenIndex);
   }
-  
-  // Process keyword detection from NDP120
-  if (keywordDetected) {
-    keywordDetected = false;
-    processDetectedToken(detectedKeywordIndex);
-  }
-  
-  // Check for command timeout (parse accumulated tokens)
-  processCommandTimeout();
-  
-  // Serial command interface for testing (without NDP120)
+
+  // Finalize command if timeout
+  maybeFinalizeCommand();
+
+  // Serial simulator (lets you test parser + BLE without NDP)
   #if DEBUG_SERIAL
   while (Serial.available()) {
     String input = Serial.readStringUntil('\n');
     input.trim();
-    
+
     if (input.startsWith("sim ")) {
-      // Simulate a token: "sim set" or "sim 0"
       String tokenStr = input.substring(4);
-      
+      tokenStr.trim();
+
       int tokenIdx = -1;
-      
-      // Try to parse as number first
-      tokenIdx = tokenStr.toInt();
-      
-      // If that didn't work, search by name
-      if (tokenIdx == 0 && tokenStr != "0") {
+
+      // number?
+      bool numeric = true;
+      for (size_t i = 0; i < tokenStr.length(); i++) {
+        if (tokenStr[i] < '0' || tokenStr[i] > '9') { numeric = false; break; }
+      }
+      if (numeric) tokenIdx = tokenStr.toInt();
+
+      if (!numeric) {
         for (int i = 0; i < TOKEN_COUNT; i++) {
           if (tokenStr.equalsIgnoreCase(TOKEN_NAMES[i])) {
             tokenIdx = i;
@@ -667,30 +694,33 @@ void loop() {
           }
         }
       }
-      
+
       if (tokenIdx >= 0 && tokenIdx < TOKEN_COUNT) {
-        processDetectedToken(tokenIdx);
+        pushToken(tokenIdx);
       } else {
-        Serial.printf("Unknown token: %s\n", tokenStr.c_str());
+        Serial.print("Unknown token: ");
+        Serial.println(tokenStr);
       }
     } else if (input == "status") {
-      Serial.printf("BLE connected: %s\n", bleConnected ? "yes" : "no");
-      Serial.printf("Parse buffer: %d tokens\n", parseState.count);
+      Serial.print("BLE connected: ");
+      Serial.println(bleConnected ? "yes" : "no");
+      Serial.print("Parse buffer tokens: ");
+      Serial.println(parseState.count);
     } else if (input == "tokens") {
-      Serial.println("Available tokens:");
       for (int i = 0; i < TOKEN_COUNT; i++) {
-        Serial.printf("  %2d: %s\n", i, TOKEN_NAMES[i]);
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.println(TOKEN_NAMES[i]);
       }
     } else if (input == "help") {
       Serial.println("\n=== Commands ===");
-      Serial.println("  sim <token>  - Simulate token detection");
-      Serial.println("  status       - Show connection status");
+      Serial.println("  sim <token>  - Simulate token detection (name or index)");
+      Serial.println("  status       - Show BLE + parse buffer status");
       Serial.println("  tokens       - List all tokens");
-      Serial.println("");
-      Serial.println("Example: sim set, sim five, sim minutes");
+      Serial.println("Example: sim set, sim baking, sim five, sim minutes");
     }
   }
   #endif
-  
-  delay(10);
+
+  delay(5);
 }
