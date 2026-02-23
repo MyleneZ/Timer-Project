@@ -17,14 +17,31 @@ Commands List
     - auto-shutoff after 90 seconds
 
 Train Data Script:
+
+40x
+ACTIONS: "stop", "set", "add", "minus", "cancel"
+NUMBERS: "One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Minutes, Hours"
+         "Ten, Eleven, Twelve, Thirteen, Fourteen, Fifteen, Sixteen, Seventeen, Eighteen, Nineteen"
+         "Twenty, Thirty, Forty, Fifty, Sixty, Seventy, Eighty, Ninety"
+NAME: "Baking, Break, Homework, Exercise"
+
+
 - "Set a timer called Timer 1 for 20 minutes."
+
 - "Cancel the timer called Timer 1."
+
 - "Add 5 minutes to Timer 1."
+
 - "Minus 5 minutes to Timer 1."
+
 - "Stop"
+
 - "One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Minutes, Hours"
+
 - "Ten, Eleven, Twelve, Thirteen, Fourteen, Fifteen, Sixteen, Seventeen, Eighteen, Nineteen"
+
 - "Twenty, Thirty, Forty, Fifty, Sixty, Seventy, Eighty, Ninety"
+
 - "Baking, Break, Homework, Exercise, Workout"
 
 
@@ -113,3 +130,16 @@ python3 generate_kws_template.py --wavs wavs --out kws_templates.h
             - Resume ping
 - Miscellaneous:
     - Research Paper
+
+
+
+
+
+
+2/21/26:
+- Mylene TODOs: record the following 40 times
+NUMBERS: "One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Minutes, Hours"
+         "Ten, Eleven, Twelve, Thirteen, Fourteen, Fifteen, Sixteen, Seventeen, Eighteen, Nineteen"
+         "Twenty, Thirty, Forty, Fifty, Sixty, Seventy, Eighty, Ninety"
+- Andrew TODOs:
+    - make the case wider by 1.5 inches
