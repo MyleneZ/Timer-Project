@@ -18,10 +18,12 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
+#include <ctype.h>
 #include <math.h>
 #include <vector>
 #include <string>
 #include "command_protocol.h"
+#include "font/RacingSansOne_Regular20pt7b.h"
 #include <NimBLEDevice.h>
 
 // ======================= FEATURE FLAGS =======================
@@ -161,20 +163,101 @@ static inline uint16_t lerp565(uint16_t c0, uint16_t c1, uint8_t t) {
   return (r << 11) | (g << 5) | b;
 }
 
-// Gradient colors
-static uint16_t GRAD_START = hex565(0xe9faff);
-static uint16_t GRAD_END   = hex565(0x0099ff);
-static uint16_t GRAD_BLUE   = hex565(0x0099ff);
-static uint16_t GRAD_RED    = hex565(0xFE809F);
-static uint16_t GRAD_GREEN  = hex565(0x59CEB9);
-static uint16_t GRAD_PURPLE = hex565(0xC481FF);
-static uint16_t GRAD_ORANGE = hex565(0xFF845B);
-static bool invertGradient = false;
+enum TimerThemeId : uint8_t {
+  THEME_DEFAULT = 0,
+  THEME_BREAK = 1,
+  THEME_HOMEWORK = 2,
+  THEME_BAKING = 3,
+  THEME_EXERCISE = 4
+};
 
-// Background colors for different timer panels
-static const uint16_t BG_PANEL_1 = hex565(0x14215E);
-static const uint16_t BG_PANEL_2 = hex565(0x2139A4);
-static const uint16_t BG_PANEL_3 = hex565(0x3F56C0);
+struct TimerTheme {
+  uint16_t bg;
+  uint16_t ring_start;
+  uint16_t ring_end;
+  uint16_t ring_empty;
+  uint16_t text;
+  uint16_t art_primary;
+  uint16_t art_secondary;
+  uint16_t art_tertiary;
+  uint16_t art_shadow;
+};
+
+static const uint16_t COLOR_IDLE_BG = hex565(0x181a20);
+static const uint16_t COLOR_IDLE_SUB = hex565(0x99a2b1);
+static const uint16_t COLOR_ALERT_RED = hex565(0xff738d);
+static const uint16_t COLOR_ALERT_ORANGE = hex565(0xff9c5a);
+static const uint16_t COLOR_ALERT_START = hex565(0xffeef2);
+
+static const TimerTheme THEME_DEFAULT_STYLE = {
+  hex565(0x24364a),
+  hex565(0xe4f0ff),
+  hex565(0x7fbcff),
+  hex565(0x56718b),
+  WHITE,
+  hex565(0xd9e5f1),
+  hex565(0x9cc3e4),
+  hex565(0xffffff),
+  hex565(0x33495f)
+};
+
+static const TimerTheme THEME_BREAK_STYLE = {
+  hex565(0x4e3a3a),
+  hex565(0xf0dcdf),
+  hex565(0xd8b2b7),
+  hex565(0x7a6466),
+  WHITE,
+  hex565(0xebe7e2),
+  hex565(0xc7cccf),
+  hex565(0x6c4320),
+  hex565(0x988f88)
+};
+
+static const TimerTheme THEME_HOMEWORK_STYLE = {
+  hex565(0x425c79),
+  hex565(0xd8eeff),
+  hex565(0x71bbff),
+  hex565(0x6687a3),
+  WHITE,
+  hex565(0xf2b37d),
+  hex565(0xdfb0cf),
+  hex565(0x8f4d7e),
+  hex565(0xbfd5ea)
+};
+
+static const TimerTheme THEME_BAKING_STYLE = {
+  hex565(0x7f4259),
+  hex565(0xffd7dd),
+  hex565(0xff7d93),
+  hex565(0xa8647b),
+  WHITE,
+  hex565(0xff7c67),
+  hex565(0xffd8a6),
+  hex565(0x5fc5c4),
+  hex565(0xa85870)
+};
+
+static const TimerTheme THEME_EXERCISE_STYLE = {
+  hex565(0x1f5b63),
+  hex565(0xc4eee5),
+  hex565(0x44d0ba),
+  hex565(0x427f82),
+  WHITE,
+  hex565(0xb6e0d8),
+  hex565(0x9dc8c1),
+  hex565(0xdaf5ef),
+  hex565(0x2e7479)
+};
+
+static uint16_t RANDOM_RING_COLORS[] = {
+  hex565(0x71bbff),
+  hex565(0xff7d93),
+  hex565(0x44d0ba),
+  hex565(0xc481ff),
+  hex565(0xff9c5a)
+};
+
+static bool invertGradient = false;
 
 // ======================= TIMER STATE =======================
 #define MAX_TIMERS 3
@@ -188,16 +271,57 @@ struct Timer {
   bool ringing;
   uint32_t ring_start_ms;      // When alarm started
   uint16_t ring_color;
+  uint8_t theme_id;
 };
 
 static Timer timers[MAX_TIMERS];
 static int active_timer_count = 0;
+
+static bool name_equals_ignore_case(const char* lhs, const char* rhs) {
+  while (*lhs && *rhs) {
+    if (tolower((unsigned char)*lhs) != tolower((unsigned char)*rhs)) {
+      return false;
+    }
+    ++lhs;
+    ++rhs;
+  }
+  return *lhs == '\0' && *rhs == '\0';
+}
+
+static TimerThemeId detect_theme_id(const char* name) {
+  if (name_equals_ignore_case(name, "Break")) return THEME_BREAK;
+  if (name_equals_ignore_case(name, "Homework")) return THEME_HOMEWORK;
+  if (name_equals_ignore_case(name, "Baking") || name_equals_ignore_case(name, "Cooking")) return THEME_BAKING;
+  if (name_equals_ignore_case(name, "Exercise") || name_equals_ignore_case(name, "Workout")) return THEME_EXERCISE;
+  return THEME_DEFAULT;
+}
+
+static TimerTheme theme_from_id(uint8_t theme_id) {
+  switch (theme_id) {
+    case THEME_BREAK: return THEME_BREAK_STYLE;
+    case THEME_HOMEWORK: return THEME_HOMEWORK_STYLE;
+    case THEME_BAKING: return THEME_BAKING_STYLE;
+    case THEME_EXERCISE: return THEME_EXERCISE_STYLE;
+    default: return THEME_DEFAULT_STYLE;
+  }
+}
+
+static TimerTheme resolved_theme_for_timer(const Timer& timer) {
+  TimerTheme theme = theme_from_id(timer.theme_id);
+  if (timer.theme_id == THEME_DEFAULT) {
+    theme.ring_end = timer.ring_color;
+    theme.ring_start = lerp565(hex565(0xfafcff), timer.ring_color, 84);
+    theme.ring_empty = lerp565(theme.bg, timer.ring_color, 76);
+  }
+  return theme;
+}
 
 // ======================= RING BUFFER =======================
 #if USE_RING
 static uint16_t ringbuf[RING_SZ * RING_SZ];
 static uint16_t angleLUT[RING_SZ * RING_SZ];
 static uint8_t  maskLUT[RING_SZ * RING_SZ];
+static float current_ring_lut_scale = -1.0f;
 
 static inline int ring_size_px(float scale) {
   int sz = (int)(RING_SZ * scale + 0.5f);
@@ -205,15 +329,8 @@ static inline int ring_size_px(float scale) {
 }
 
 static uint16_t pick_random_color() {
-  int colorPicker = random(0, 5);
-  switch(colorPicker) {
-    case 0: return GRAD_BLUE;
-    case 1: return GRAD_RED;
-    case 2: return GRAD_GREEN;
-    case 3: return GRAD_PURPLE;
-    case 4: return GRAD_ORANGE;
-    default: return GRAD_BLUE;
-  }
+  int colorPicker = random(0, (int)(sizeof(RANDOM_RING_COLORS) / sizeof(RANDOM_RING_COLORS[0])));
+  return RANDOM_RING_COLORS[colorPicker];
 }
 
 static void init_ring_lut(float scale = 1.0f) {
@@ -246,6 +363,13 @@ static void init_ring_lut(float scale = 1.0f) {
   }
 }
 
+static void ensure_ring_lut(float scale = 1.0f) {
+  if (current_ring_lut_scale != scale) {
+    init_ring_lut(scale);
+    current_ring_lut_scale = scale;
+  }
+}
+
 enum CapMode : uint8_t {
   CAP_NONE  = 0,
   CAP_LEAD  = 1,
@@ -253,9 +377,10 @@ enum CapMode : uint8_t {
   CAP_BOTH  = 3
 };
 
-static void draw_ring(float fracRemaining, uint8_t caps, uint16_t grad_end,
+static void draw_ring(float fracRemaining, uint8_t caps,
+                      uint16_t grad_start, uint16_t grad_end, uint16_t empty_ring,
                       int x = RING_X, int y = RING_Y,
-                      uint16_t bg = BG_PANEL_1, float scale = 1.0f) {
+                      uint16_t bg = COLOR_IDLE_BG, float scale = 1.0f) {
   if (fracRemaining < 0) fracRemaining = 0;
   if (fracRemaining > 1) fracRemaining = 1;
 
@@ -265,7 +390,6 @@ static void draw_ring(float fracRemaining, uint8_t caps, uint16_t grad_end,
   if (span == 0) span = 1;
 
   const uint16_t OUTSIDE = bg;
-  const uint16_t BG_RING = hex565(0x44598C);
 
   const int SZ = ring_size_px(scale);
   const int cx = SZ / 2;
@@ -305,12 +429,12 @@ static void draw_ring(float fracRemaining, uint8_t caps, uint16_t grad_end,
 
       const uint16_t a = angleLUT[idx];
       bool inArc = (a >= cut);
-      uint16_t color = BG_RING;
+      uint16_t color = empty_ring;
 
       if (inArc) {
         uint8_t t = (uint8_t)(((uint32_t)(a - cut) * 255U) / span);
         if (invertGradient) t = 255 - t;
-        color = lerp565(GRAD_START, grad_end, t);
+        color = lerp565(grad_start, grad_end, t);
       }
 
       if (!inArc && nCaps) {
@@ -318,7 +442,7 @@ static void draw_ring(float fracRemaining, uint8_t caps, uint16_t grad_end,
           const float dx = (float)xx - capX[i];
           const float dy = (float)yy - capY[i];
           if (dx*dx + dy*dy <= cap_r2) {
-            color = (i == 0 && (caps & CAP_LEAD)) ? GRAD_START : grad_end;
+            color = (i == 0 && (caps & CAP_LEAD)) ? grad_start : grad_end;
             inArc = true;
             break;
           }
@@ -533,6 +657,7 @@ static ParsedCommand parseCommand(const std::string& msg) {
 }
 
 void processVoiceCommand(ParsedCommand& cmd);  // Forward declaration
+static void requestFullRedraw();               // Forward declaration
 
 // ======================= BLE FOR NICLA VOICE =======================
 #if USE_BLE
@@ -608,9 +733,14 @@ static bool createTimer(const char* name, uint32_t duration_seconds) {
   timers[slot].seconds_left = duration_seconds;
   timers[slot].active = true;
   timers[slot].ringing = false;
+  timers[slot].theme_id = detect_theme_id(name);
   timers[slot].ring_color = pick_random_color();
+  if (timers[slot].theme_id != THEME_DEFAULT) {
+    timers[slot].ring_color = theme_from_id(timers[slot].theme_id).ring_end;
+  }
   
   updateActiveCount();
+  requestFullRedraw();
   Serial.printf("[TIMER] Created: %s for %lu seconds\n", name, (unsigned long)duration_seconds);
   
   #if USE_SPEAKER
@@ -630,6 +760,7 @@ static bool cancelTimer(const char* name) {
   timers[idx].active = false;
   timers[idx].ringing = false;
   updateActiveCount();
+  requestFullRedraw();
   
   Serial.printf("[TIMER] Cancelled: %s\n", name);
   
@@ -650,6 +781,7 @@ static bool addTimeToTimer(const char* name, uint32_t seconds) {
   if (timers[idx].ringing) {
     timers[idx].ringing = false;  // Stop alarm if adding time
   }
+  requestFullRedraw();
   
   Serial.printf("[TIMER] Added %lu seconds to %s\n", (unsigned long)seconds, name);
   
@@ -669,6 +801,7 @@ static bool subtractTimeFromTimer(const char* name, uint32_t seconds) {
   } else {
     timers[idx].seconds_left -= seconds;
   }
+  requestFullRedraw();
   
   Serial.printf("[TIMER] Subtracted %lu seconds from %s\n", (unsigned long)seconds, name);
   
@@ -687,6 +820,7 @@ static void stopAllAlarms() {
     }
   }
   updateActiveCount();
+  requestFullRedraw();
   
   Serial.println("[TIMER] All alarms stopped");
   
@@ -728,32 +862,265 @@ static void fmt_hhmmss(uint32_t sec, char* out) {
   sprintf(out, "%02lu:%02lu:%02lu", (unsigned long)h, (unsigned long)m, (unsigned long)s);
 }
 
-static void drawNoTimersScreen() {
-  gfx->fillScreen(BG_PANEL_1);
-  
-  gfx->setTextSize(3);
-  gfx->setTextColor(WHITE, BG_PANEL_1);
+struct PanelLayout {
+  int x;
+  int y;
+  int w;
+  int h;
+  int title_x;
+  int title_y;
+  uint8_t title_scale;
+  int time_x;
+  int time_y;
+  uint8_t time_scale;
+  int art_x;
+  int art_y;
+  int art_size;
+  int ring_cx;
+  int ring_cy;
+  float ring_scale;
+};
+
+static void configure_ui_font(uint8_t scale) {
+  gfx->setFont(&RacingSansOne_Regular20pt7b);
+  gfx->setTextSize(scale);
   gfx->setTextWrap(false);
-  
-  // Center text on screen
-  const char* line1 = "No Active Timers";
-  const char* line2 = "Say 'Set a timer' or";
-  const char* line3 = "connect via Bluetooth";
-  
-  gfx->setCursor(320 - strlen(line1) * 9, 120);
-  gfx->print(line1);
-  
-  gfx->setTextSize(2);
-  gfx->setCursor(320 - strlen(line2) * 6, 180);
-  gfx->print(line2);
-  gfx->setCursor(320 - strlen(line3) * 6, 210);
-  gfx->print(line3);
-  
-  // Draw decorative rings
+}
+
+static void measure_ui_text(const char* text, uint8_t scale,
+                            int16_t* x1, int16_t* y1,
+                            uint16_t* w, uint16_t* h) {
+  configure_ui_font(scale);
+  gfx->getTextBounds(text, 0, 0, x1, y1, w, h);
+  gfx->setFont(nullptr);
+  gfx->setTextSize(1);
+}
+
+static void draw_ui_text(const char* text, int left, int top, uint16_t color, uint8_t scale) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  measure_ui_text(text, scale, &x1, &y1, &w, &h);
+  configure_ui_font(scale);
+  gfx->setTextColor(color);
+  gfx->setCursor(left - x1, top - y1);
+  gfx->print(text);
+  gfx->setFont(nullptr);
+  gfx->setTextSize(1);
+}
+
+static void draw_ui_text_centered(const char* text, int center_x, int top, uint16_t color, uint8_t scale) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  measure_ui_text(text, scale, &x1, &y1, &w, &h);
+  int left = center_x - ((int)w / 2);
+  draw_ui_text(text, left, top, color, scale);
+}
+
+static PanelLayout panel_layout_for(int active_count, int slot) {
+  PanelLayout layout = {};
+  layout.y = 0;
+  layout.h = 320;
+
+  if (active_count == 1) {
+    layout.x = 0;
+    layout.w = 960;
+    layout.title_x = 46;
+    layout.title_y = 42;
+    layout.title_scale = 1;
+    layout.time_x = 46;
+    layout.time_y = 86;
+    layout.time_scale = 2;
+    layout.art_x = 164;
+    layout.art_y = 220;
+    layout.art_size = 120;
+    layout.ring_cx = 728;
+    layout.ring_cy = 160;
+    layout.ring_scale = 0.96f;
+  } else if (active_count == 2) {
+    layout.x = slot * 480;
+    layout.w = 480;
+    layout.title_x = layout.x + 28;
+    layout.title_y = 34;
+    layout.title_scale = 1;
+    layout.time_x = layout.x + 28;
+    layout.time_y = 78;
+    layout.time_scale = 1;
+    layout.art_x = layout.x + 108;
+    layout.art_y = 220;
+    layout.art_size = 104;
+    layout.ring_cx = layout.x + 344;
+    layout.ring_cy = 164;
+    layout.ring_scale = 0.80f;
+  } else {
+    layout.x = slot * 320;
+    layout.w = 320;
+    layout.title_x = layout.x + 18;
+    layout.title_y = 22;
+    layout.title_scale = 1;
+    layout.time_x = layout.x + 18;
+    layout.time_y = 56;
+    layout.time_scale = 1;
+    layout.art_x = layout.x + 82;
+    layout.art_y = 224;
+    layout.art_size = 72;
+    layout.ring_cx = layout.x + 236;
+    layout.ring_cy = 148;
+    layout.ring_scale = 0.58f;
+  }
+
+  return layout;
+}
+
+static void draw_clock_illustration(int cx, int cy, int size, const TimerTheme& theme) {
+  gfx->fillCircle(cx, cy, size / 2, theme.art_shadow);
+  gfx->fillCircle(cx, cy, size / 2 - 8, theme.art_primary);
+  gfx->fillCircle(cx, cy, size / 2 - 18, theme.bg);
+  gfx->drawLine(cx, cy, cx, cy - size / 5, theme.art_secondary);
+  gfx->drawLine(cx, cy, cx + size / 6, cy + size / 10, theme.art_secondary);
+  gfx->fillCircle(cx, cy, 4, theme.art_secondary);
+}
+
+static void draw_coffee_illustration(int cx, int cy, int size, const TimerTheme& theme) {
+  int saucer_y = cy + size / 5;
+  gfx->fillCircle(cx, saucer_y, size / 2, theme.art_shadow);
+  gfx->fillCircle(cx, saucer_y - 2, size / 2 - 8, theme.art_secondary);
+  gfx->fillCircle(cx, saucer_y - 2, size / 2 - 18, theme.art_primary);
+  gfx->fillRoundRect(cx - size / 5, cy - size / 6, size / 2, size / 3, size / 10, theme.art_primary);
+  gfx->fillCircle(cx, cy - size / 7, size / 7, theme.art_tertiary);
+  gfx->drawCircle(cx + size / 7, cy - size / 24, size / 9, theme.art_secondary);
+  gfx->drawCircle(cx + size / 7, cy - size / 24, size / 9 + 1, theme.art_secondary);
+}
+
+static void draw_books_illustration(int cx, int cy, int size, const TimerTheme& theme) {
+  int book_w = size / 3;
+  int book_h = size / 2;
+  gfx->fillRoundRect(cx - book_w, cy - book_h / 2, book_w, book_h, 8, theme.art_primary);
+  gfx->fillRoundRect(cx - book_w / 8, cy - book_h / 2 + size / 12, book_w, book_h, 8, theme.art_secondary);
+  gfx->fillRect(cx - book_w + book_w / 5, cy - book_h / 2 + 10, 4, book_h - 20, theme.art_shadow);
+  gfx->fillRect(cx + book_w / 7, cy - book_h / 2 + 16, 4, book_h - 26, theme.art_shadow);
+  gfx->drawLine(cx - book_w / 2, cy - book_h / 4, cx - book_w / 6, cy - book_h / 3, theme.art_tertiary);
+  gfx->drawLine(cx - book_w / 2, cy - book_h / 4 + 8, cx - book_w / 7, cy - book_h / 3 + 8, theme.art_tertiary);
+}
+
+static void draw_baking_illustration(int cx, int cy, int size, const TimerTheme& theme) {
+  gfx->fillCircle(cx, cy + size / 10, size / 3, theme.art_primary);
+  gfx->fillCircle(cx, cy + size / 5, size / 4, theme.art_secondary);
+  gfx->fillRect(cx - size / 4, cy - size / 12, size / 2, size / 9, theme.art_primary);
+  gfx->drawLine(cx + size / 6, cy - size / 3, cx + size / 4, cy + size / 9, theme.art_tertiary);
+  gfx->drawLine(cx + size / 12, cy - size / 4, cx + size / 4, cy + size / 11, theme.art_tertiary);
+  gfx->drawLine(cx + size / 8, cy - size / 6, cx + size / 3, cy - size / 8, theme.art_tertiary);
+}
+
+static void draw_dumbbell_illustration(int cx, int cy, int size, const TimerTheme& theme) {
+  gfx->fillRect(cx - size / 4, cy - size / 16, size / 2, size / 8, theme.art_secondary);
+  gfx->fillCircle(cx - size / 3, cy, size / 10, theme.art_primary);
+  gfx->fillCircle(cx - size / 4, cy, size / 7, theme.art_primary);
+  gfx->fillCircle(cx + size / 4, cy, size / 7, theme.art_primary);
+  gfx->fillCircle(cx + size / 3, cy, size / 10, theme.art_primary);
+  gfx->fillRect(cx - size / 3, cy - size / 12, size / 16, size / 6, theme.art_tertiary);
+  gfx->fillRect(cx + size / 4, cy - size / 12, size / 16, size / 6, theme.art_tertiary);
+}
+
+static void draw_theme_illustration(uint8_t theme_id, int cx, int cy, int size, const TimerTheme& theme) {
+  switch (theme_id) {
+    case THEME_BREAK:
+      draw_coffee_illustration(cx, cy, size, theme);
+      break;
+    case THEME_HOMEWORK:
+      draw_books_illustration(cx, cy, size, theme);
+      break;
+    case THEME_BAKING:
+      draw_baking_illustration(cx, cy, size, theme);
+      break;
+    case THEME_EXERCISE:
+      draw_dumbbell_illustration(cx, cy, size, theme);
+      break;
+    default:
+      draw_clock_illustration(cx, cy, size, theme);
+      break;
+  }
+}
+
+static void draw_panel_backdrop(const PanelLayout& layout, const TimerTheme& theme) {
+  gfx->fillCircle(layout.art_x, layout.art_y, layout.art_size / 2 + 12, theme.art_shadow);
+  gfx->fillCircle(layout.art_x - layout.art_size / 3, layout.art_y - layout.art_size / 3,
+                  layout.art_size / 8, lerp565(theme.ring_start, theme.art_primary, 90));
+  gfx->fillCircle(layout.ring_cx, layout.ring_cy,
+                  ring_size_px(layout.ring_scale) / 2 + 10,
+                  lerp565(theme.bg, theme.ring_empty, 72));
+}
+
+static void draw_timer_ring(const PanelLayout& layout, const Timer& timer, float frac, uint32_t now) {
   #if USE_RING
-  init_ring_lut(0.5f);
-  draw_ring(1.0f, CAP_LEAD, GRAD_BLUE, 480 - 48, 160 - 48, BG_PANEL_1, 0.5f);
+  TimerTheme theme = resolved_theme_for_timer(timer);
+  bool flash = ((now / 250) % 2) == 0;
+  uint16_t ring_start = timer.ringing
+    ? (flash ? COLOR_ALERT_START : lerp565(COLOR_ALERT_START, COLOR_ALERT_ORANGE, 80))
+    : theme.ring_start;
+  uint16_t ring_end = timer.ringing
+    ? (flash ? COLOR_ALERT_RED : COLOR_ALERT_ORANGE)
+    : theme.ring_end;
+  uint16_t ring_empty = timer.ringing
+    ? lerp565(theme.ring_empty, COLOR_ALERT_ORANGE, 80)
+    : theme.ring_empty;
+  float draw_frac = timer.ringing ? (flash ? 0.04f : 0.12f) : frac;
+  int ring_size = ring_size_px(layout.ring_scale);
+
+  ensure_ring_lut(layout.ring_scale);
+  draw_ring(draw_frac, CAP_LEAD, ring_start, ring_end, ring_empty,
+            layout.ring_cx - ring_size / 2,
+            layout.ring_cy - ring_size / 2,
+            theme.bg, layout.ring_scale);
   #endif
+}
+
+static void draw_timer_panel(const PanelLayout& layout, const Timer& timer, uint32_t now) {
+  TimerTheme theme = resolved_theme_for_timer(timer);
+  char hhmmss[9];
+  fmt_hhmmss(timer.seconds_left, hhmmss);
+
+  gfx->fillRect(layout.x, layout.y, layout.w, layout.h, theme.bg);
+  draw_panel_backdrop(layout, theme);
+  draw_theme_illustration(timer.theme_id, layout.art_x, layout.art_y, layout.art_size, theme);
+  draw_ui_text(timer.name, layout.title_x, layout.title_y, theme.text, layout.title_scale);
+  draw_ui_text(hhmmss, layout.time_x, layout.time_y, theme.text, layout.time_scale);
+
+  float frac = 0.0f;
+  if (timer.total_seconds > 0) {
+    frac = (float)timer.seconds_left / (float)timer.total_seconds;
+  }
+  draw_timer_ring(layout, timer, frac, now);
+}
+
+static void drawNoTimersScreen() {
+  gfx->fillScreen(COLOR_IDLE_BG);
+  draw_ui_text_centered("No Active Timers", 480, 34, WHITE, 1);
+  draw_ui_text_centered("Say 'Set a timer' to begin", 480, 90, COLOR_IDLE_SUB, 1);
+  draw_ui_text_centered("or connect via Bluetooth", 480, 128, COLOR_IDLE_SUB, 1);
+
+  const TimerTheme previews[] = {
+    THEME_BREAK_STYLE,
+    THEME_HOMEWORK_STYLE,
+    THEME_BAKING_STYLE,
+    THEME_EXERCISE_STYLE
+  };
+  const uint8_t previewIds[] = {
+    THEME_BREAK,
+    THEME_HOMEWORK,
+    THEME_BAKING,
+    THEME_EXERCISE
+  };
+  const int centers[] = {156, 364, 572, 780};
+
+  for (int i = 0; i < 4; i++) {
+    draw_theme_illustration(previewIds[i], centers[i] - 28, 236, 58, previews[i]);
+    #if USE_RING
+    ensure_ring_lut(0.38f);
+    int ring_size = ring_size_px(0.38f);
+    draw_ring(0.84f, CAP_LEAD, previews[i].ring_start, previews[i].ring_end, previews[i].ring_empty,
+              centers[i] - ring_size / 2, 186, COLOR_IDLE_BG, 0.38f);
+    #endif
+  }
 }
 
 static void renderTimers();  // Forward declaration
@@ -764,6 +1131,10 @@ static uint32_t last_ring_ms = 0;
 static char last_text[MAX_TIMERS][9] = {"--------", "--------", "--------"};
 static char last_name[MAX_TIMERS][16] = {"", "", ""};
 static bool needs_full_redraw = true;
+
+static void requestFullRedraw() {
+  needs_full_redraw = true;
+}
 
 // ======================= MAIN SETUP =======================
 void setup() {
@@ -787,7 +1158,8 @@ void setup() {
     timers[i].seconds_left = 0;
     timers[i].active = false;
     timers[i].ringing = false;
-    timers[i].ring_color = GRAD_BLUE;
+    timers[i].ring_color = RANDOM_RING_COLORS[0];
+    timers[i].theme_id = THEME_DEFAULT;
   }
 
   #if USE_SPEAKER
@@ -847,7 +1219,7 @@ void setup() {
   #endif
 
   #if USE_RING
-  init_ring_lut();
+  ensure_ring_lut();
   #endif
 
   // Show initial screen
@@ -889,110 +1261,18 @@ static void renderTimers() {
       activeIndices[count++] = i;
     }
   }
+  gfx->fillScreen(COLOR_IDLE_BG);
+  uint32_t now = millis();
 
-  if (active_timer_count == 1) {
-    // Single timer - full screen
-    int idx = activeIndices[0];
-    gfx->fillScreen(BG_PANEL_1);
-    
-    gfx->setTextSize(8);
-    gfx->setTextWrap(false);
-    gfx->setTextColor(WHITE, BG_PANEL_1);
-    
-    #if USE_RING
-    init_ring_lut();
-    float frac = (float)timers[idx].seconds_left / (float)timers[idx].total_seconds;
-    draw_ring(frac, CAP_LEAD, timers[idx].ring_color, RING_X, RING_Y, BG_PANEL_1, 1.0f);
-    #endif
-    
+  for (int i = 0; i < count; i++) {
+    int idx = activeIndices[i];
+    PanelLayout layout = panel_layout_for(active_timer_count, i);
+    draw_timer_panel(layout, timers[idx], now);
+
     char hhmmss[9];
     fmt_hhmmss(timers[idx].seconds_left, hhmmss);
-    strcpy(last_text[0], hhmmss);
-    gfx->setCursor(TXT_X, TXT_Y);
-    gfx->print(hhmmss);
-    
-    gfx->setTextSize(4);
-    strcpy(last_name[0], timers[idx].name);
-    gfx->setCursor(TXT_X, TXT_Y - 40);
-    gfx->print(timers[idx].name);
-    
-  } else if (active_timer_count == 2) {
-    // Two timers - split screen
-    gfx->fillScreen(BG_PANEL_1);
-    gfx->fillRect(480, 0, 480, 320, BG_PANEL_2);
-    
-    gfx->setTextSize(5);
-    gfx->setTextWrap(false);
-    
-    #if USE_RING
-    init_ring_lut(0.8f);
-    #endif
-    
-    for (int i = 0; i < 2; i++) {
-      int idx = activeIndices[i];
-      uint16_t bg = (i == 0) ? BG_PANEL_1 : BG_PANEL_2;
-      int xOffset = i * 480;
-      
-      gfx->setTextColor(WHITE, bg);
-      
-      #if USE_RING
-      float frac = (float)timers[idx].seconds_left / (float)timers[idx].total_seconds;
-      draw_ring(frac, CAP_LEAD, timers[idx].ring_color, 
-                RING_CX - 680 + xOffset, RING_CY - 76, bg, 0.8f);
-      #endif
-      
-      char hhmmss[9];
-      fmt_hhmmss(timers[idx].seconds_left, hhmmss);
-      strcpy(last_text[i], hhmmss);
-      gfx->setCursor(TXT_X + 85 + xOffset, TXT_Y - 80);
-      gfx->print(hhmmss);
-      
-      gfx->setTextSize(3);
-      strcpy(last_name[i], timers[idx].name);
-      gfx->setCursor(TXT_X + 85 + xOffset, TXT_Y - 120);
-      gfx->print(timers[idx].name);
-      gfx->setTextSize(5);
-    }
-    
-  } else if (active_timer_count == 3) {
-    // Three timers - thirds
-    gfx->fillScreen(BG_PANEL_1);
-    gfx->fillRect(320, 0, 320, 320, BG_PANEL_2);
-    gfx->fillRect(640, 0, 320, 320, BG_PANEL_3);
-    
-    gfx->setTextSize(4);
-    gfx->setTextWrap(false);
-    
-    #if USE_RING
-    init_ring_lut(0.6f);
-    #endif
-    
-    for (int i = 0; i < 3; i++) {
-      int idx = activeIndices[i];
-      uint16_t bg = (i == 0) ? BG_PANEL_1 : (i == 1) ? BG_PANEL_2 : BG_PANEL_3;
-      int xOffset = i * 320;
-      
-      gfx->setTextColor(WHITE, bg);
-      
-      #if USE_RING
-      float frac = (float)timers[idx].seconds_left / (float)timers[idx].total_seconds;
-      int ringX = 160 + xOffset - (int)(RING_SZ * 0.6f / 2);
-      int ringY = 80;
-      draw_ring(frac, CAP_LEAD, timers[idx].ring_color, ringX, ringY, bg, 0.6f);
-      #endif
-      
-      char hhmmss[9];
-      fmt_hhmmss(timers[idx].seconds_left, hhmmss);
-      strcpy(last_text[i], hhmmss);
-      gfx->setCursor(60 + xOffset, 220);
-      gfx->print(hhmmss);
-      
-      gfx->setTextSize(2);
-      strcpy(last_name[i], timers[idx].name);
-      gfx->setCursor(60 + xOffset, 190);
-      gfx->print(timers[idx].name);
-      gfx->setTextSize(4);
-    }
+    strcpy(last_text[i], hhmmss);
+    strcpy(last_name[i], timers[idx].name);
   }
 }
 
@@ -1014,7 +1294,7 @@ static void processDemoCommands() {
       
       if (cmd.cmd != CMD_NONE) {
         processVoiceCommand(cmd);
-        needs_full_redraw = true;
+        requestFullRedraw();
       }
     }
   }
@@ -1035,7 +1315,7 @@ void loop() {
   static int last_active_count = 0;
   if (active_timer_count != last_active_count) {
     last_active_count = active_timer_count;
-    needs_full_redraw = true;
+    requestFullRedraw();
   }
   
   // Full redraw if needed
@@ -1061,7 +1341,7 @@ void loop() {
           timers[i].ringing = false;
           timers[i].active = false;
           updateActiveCount();
-          needs_full_redraw = true;
+          requestFullRedraw();
           #if USE_SPEAKER
           play_alarm_tone(false);
           #endif
@@ -1079,52 +1359,8 @@ void loop() {
       }
     }
     
-    // Update text display (partial update)
     if (any_timer_changed && !needs_full_redraw) {
-      int activeIndices[MAX_TIMERS];
-      int count = 0;
-      for (int i = 0; i < MAX_TIMERS && count < active_timer_count; i++) {
-        if (timers[i].active) {
-          activeIndices[count++] = i;
-        }
-      }
-      
-      for (int i = 0; i < count; i++) {
-        int idx = activeIndices[i];
-        char hhmmss[9];
-        fmt_hhmmss(timers[idx].seconds_left, hhmmss);
-        
-        if (strcmp(hhmmss, last_text[i]) != 0) {
-          strcpy(last_text[i], hhmmss);
-          
-          // Determine position based on layout
-          uint16_t bg;
-          int textX, textY;
-          int textSize;
-          
-          if (active_timer_count == 1) {
-            bg = BG_PANEL_1;
-            textX = TXT_X;
-            textY = TXT_Y;
-            textSize = 8;
-          } else if (active_timer_count == 2) {
-            bg = (i == 0) ? BG_PANEL_1 : BG_PANEL_2;
-            textX = TXT_X + 85 + i * 480;
-            textY = TXT_Y - 80;
-            textSize = 5;
-          } else {
-            bg = (i == 0) ? BG_PANEL_1 : (i == 1) ? BG_PANEL_2 : BG_PANEL_3;
-            textX = 60 + i * 320;
-            textY = 220;
-            textSize = 4;
-          }
-          
-          gfx->setTextSize(textSize);
-          gfx->setTextColor(WHITE, bg);
-          gfx->setCursor(textX, textY);
-          gfx->print(hhmmss);
-        }
-      }
+      requestFullRedraw();
     }
   }
   
@@ -1149,55 +1385,15 @@ void loop() {
       
       for (int i = 0; i < count; i++) {
         int idx = activeIndices[i];
-        
-        // Flashing effect when ringing
-        if (timers[idx].ringing) {
-          bool flash = ((now / 250) % 2) == 0;
-          uint16_t ringColor = flash ? GRAD_RED : GRAD_ORANGE;
-          
-          // Draw full ring with flash
-          float scale = (active_timer_count == 1) ? 1.0f : 
-                        (active_timer_count == 2) ? 0.8f : 0.6f;
-          
-          uint16_t bg = (active_timer_count == 1) ? BG_PANEL_1 :
-                        (i == 0) ? BG_PANEL_1 : (i == 1) ? BG_PANEL_2 : BG_PANEL_3;
-          
-          int ringX, ringY;
-          if (active_timer_count == 1) {
-            ringX = RING_X; ringY = RING_Y;
-          } else if (active_timer_count == 2) {
-            ringX = RING_CX - 680 + i * 480; ringY = RING_CY - 76;
-          } else {
-            ringX = 160 + i * 320 - (int)(RING_SZ * 0.6f / 2); ringY = 80;
-          }
-          
-          init_ring_lut(scale);
-          draw_ring(flash ? 0.0f : 0.1f, CAP_LEAD, ringColor, ringX, ringY, bg, scale);
-          
-        } else if (timers[idx].seconds_left > 0) {
-          // Normal countdown ring
-          float remainingExact = (float)timers[idx].seconds_left + (1.0f - sub);
-          if (remainingExact < 0) remainingExact = 0;
-          float frac = remainingExact / (float)timers[idx].total_seconds;
-          
-          float scale = (active_timer_count == 1) ? 1.0f : 
-                        (active_timer_count == 2) ? 0.8f : 0.6f;
-          
-          uint16_t bg = (active_timer_count == 1) ? BG_PANEL_1 :
-                        (i == 0) ? BG_PANEL_1 : (i == 1) ? BG_PANEL_2 : BG_PANEL_3;
-          
-          int ringX, ringY;
-          if (active_timer_count == 1) {
-            ringX = RING_X; ringY = RING_Y;
-          } else if (active_timer_count == 2) {
-            ringX = RING_CX - 680 + i * 480; ringY = RING_CY - 76;
-          } else {
-            ringX = 160 + i * 320 - (int)(RING_SZ * 0.6f / 2); ringY = 80;
-          }
-          
-          init_ring_lut(scale);
-          draw_ring(frac, CAP_LEAD, timers[idx].ring_color, ringX, ringY, bg, scale);
+        PanelLayout layout = panel_layout_for(active_timer_count, i);
+        float remainingExact = (float)timers[idx].seconds_left + (1.0f - sub);
+        if (remainingExact < 0) remainingExact = 0;
+        float frac = 0.0f;
+        if (timers[idx].total_seconds > 0) {
+          frac = remainingExact / (float)timers[idx].total_seconds;
         }
+
+        draw_timer_ring(layout, timers[idx], frac, now);
       }
     }
     #endif
@@ -1233,15 +1429,15 @@ void loop() {
         String name = cmd.substring(4, firstSpace);
         uint32_t duration = cmd.substring(firstSpace + 1).toInt();
         createTimer(name.c_str(), duration);
-        needs_full_redraw = true;
+        requestFullRedraw();
       }
     } else if (cmd.startsWith("cancel ")) {
       String name = cmd.substring(7);
       cancelTimer(name.c_str());
-      needs_full_redraw = true;
+      requestFullRedraw();
     } else if (cmd == "stop") {
       stopAllAlarms();
-      needs_full_redraw = true;
+      requestFullRedraw();
     } else if (cmd.startsWith("add ")) {
       // "add Timer 1 60"
       int firstSpace = cmd.indexOf(' ', 4);
