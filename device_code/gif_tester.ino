@@ -54,6 +54,10 @@ static const char *GIF_DIR = "/assets";     // preferred directory on the device
 static const uint32_t GIF_SHOW_MS = 6000;   // how long to show each GIF before advancing
 static const uint32_t BETWEEN_GIFS_MS = 250;
 static const uint32_t MIN_FRAME_DELAY_MS = 20;  // clamp for zero/too-fast delays
+// Background behind transparent pixels. Many exported GIFs set their internal
+// "background color index" to a non-black matte (e.g., white/beige), which will
+// show up as a solid background unless we override it here.
+static const uint16_t TRANSPARENT_BG_COLOR = BLACK;
 
 // ======================= DISPLAY CONFIG (from production.ino) =======================
 #define PCLK_HZ         12000000
@@ -730,8 +734,7 @@ static bool playGifPath(const char *path) {
     return false;
   }
 
-  uint16_t bgColor = BLACK;
-  if (gif->bgindex < gif->gct.len) bgColor = gif->gct.colors[gif->bgindex];
+  const uint16_t bgColor = TRANSPARENT_BG_COLOR;
   for (size_t i = 0; i < pixels; i++) canvas565[i] = bgColor;
 
   // Optional restore-to-previous (disposal = 3) scratch buffer.
