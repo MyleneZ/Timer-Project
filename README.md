@@ -141,5 +141,6 @@ python3 generate_kws_template.py --wavs wavs --out kws_templates.h
 NUMBERS: "One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Minutes, Hours"
          "Ten, Eleven, Twelve, Thirteen, Fourteen, Fifteen, Sixteen, Seventeen, Eighteen, Nineteen"
          "Twenty, Thirty, Forty, Fifty, Sixty, Seventy, Eighty, Ninety"
+- Priority Numbers: Fifteen, Twenty, Thirty, Forty, Five
 - Andrew TODOs:
     - make the case wider by 1.5 inches
