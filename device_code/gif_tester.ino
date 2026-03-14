@@ -219,6 +219,8 @@ public:
   // Return 1 if got a frame; 0 if got GIF trailer; -1 if error.
   int32_t gd_get_frame(gd_GIF *gif, uint8_t *frame) {
     char sep;
+    // GCE is optional; reset to defaults so a missing GCE doesn't reuse prior frame settings.
+    gif->gce = {};
 
     while (1) {
       gif_buf_read(gif->fd, (uint8_t *)&sep, 1);
@@ -336,7 +338,7 @@ private:
     uint8_t rdit;
     gif_buf_seek(gif->fd, 1); // block size (always 0x04)
     gif_buf_read(gif->fd, &rdit, 1);
-    gif->gce.disposal = (rdit >> 2) & 3;
+    gif->gce.disposal = (rdit >> 2) & 7;
     gif->gce.input = rdit & 2;
     gif->gce.transparency = rdit & 1;
     gif->gce.delay = gif_buf_read16(gif->fd);
@@ -617,7 +619,7 @@ static void collectGifs() {
 static void drawHeader(const char *title, const char *subtitle = nullptr) {
   gfx->fillScreen(BLACK);
   gfx->setTextWrap(false);
-  gfx->setTextColor(WHITE);
+  gfx->setTextColor(WHITE, BLACK);
   gfx->setTextSize(2);
   gfx->setCursor(12, 12);
   gfx->print(title);
@@ -639,6 +641,34 @@ static void clearCanvasRect(uint16_t *canvas, uint16_t canvasW, uint16_t canvasH
   for (uint16_t row = 0; row < h; row++) {
     uint16_t *dst = canvas + (size_t)(y + row) * canvasW + x;
     for (uint16_t col = 0; col < w; col++) dst[col] = color;
+  }
+}
+
+static void copyCanvasRect(const uint16_t *canvas, uint16_t canvasW, uint16_t canvasH,
+                           uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                           uint16_t *out) {
+  if (!canvas || !out) return;
+  if (x >= canvasW || y >= canvasH) return;
+  if (x + w > canvasW) w = canvasW - x;
+  if (y + h > canvasH) h = canvasH - y;
+  for (uint16_t row = 0; row < h; row++) {
+    const uint16_t *src = canvas + (size_t)(y + row) * canvasW + x;
+    uint16_t *dst = out + (size_t)row * w;
+    memcpy(dst, src, (size_t)w * sizeof(uint16_t));
+  }
+}
+
+static void restoreCanvasRect(uint16_t *canvas, uint16_t canvasW, uint16_t canvasH,
+                              uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                              const uint16_t *srcRect) {
+  if (!canvas || !srcRect) return;
+  if (x >= canvasW || y >= canvasH) return;
+  if (x + w > canvasW) w = canvasW - x;
+  if (y + h > canvasH) h = canvasH - y;
+  for (uint16_t row = 0; row < h; row++) {
+    uint16_t *dst = canvas + (size_t)(y + row) * canvasW + x;
+    const uint16_t *src = srcRect + (size_t)row * w;
+    memcpy(dst, src, (size_t)w * sizeof(uint16_t));
   }
 }
 
@@ -700,8 +730,15 @@ static bool playGifPath(const char *path) {
     return false;
   }
 
-  const uint16_t bgColor = gif->gct.colors[gif->bgindex];
+  uint16_t bgColor = BLACK;
+  if (gif->bgindex < gif->gct.len) bgColor = gif->gct.colors[gif->bgindex];
   for (size_t i = 0; i < pixels; i++) canvas565[i] = bgColor;
+
+  // Optional restore-to-previous (disposal = 3) scratch buffer.
+  uint16_t *restoreBuf = nullptr;
+  size_t restoreBufPixels = 0;
+  uint16_t restoreX = 0, restoreY = 0, restoreW = 0, restoreH = 0;
+  bool restoreValid = false;
 
   // Determine output size (scale down to fit display; don't upscale).
   const int dispW = gfx->width();
@@ -764,11 +801,33 @@ static bool playGifPath(const char *path) {
     int32_t res = gifClass.gd_get_frame(gif, idxFrame);
     if (res == 0) {
       gifClass.gd_rewind(gif);
+      // Start a new loop from a clean logical screen. Some GIFs end with
+      // disposal=1 (do not dispose), which would otherwise "ghost" into loop 0.
+      for (size_t i = 0; i < pixels; i++) canvas565[i] = bgColor;
       continue;
     }
     if (res < 0) {
       Serial.printf("[GIF] Decode error: %s\n", path);
       break;
+    }
+
+    // Disposal method 3 (restore to previous): save the pre-composited rect.
+    restoreValid = false;
+    if (gif->gce.disposal == 3) {
+      size_t need = (size_t)gif->fw * (size_t)gif->fh;
+      if (need > restoreBufPixels) {
+        if (restoreBuf) free(restoreBuf);
+        restoreBuf = (uint16_t *)gif_alloc(need * sizeof(uint16_t));
+        restoreBufPixels = restoreBuf ? need : 0;
+      }
+      if (restoreBuf) {
+        restoreX = gif->fx;
+        restoreY = gif->fy;
+        restoreW = gif->fw;
+        restoreH = gif->fh;
+        copyCanvasRect(canvas565, inW, inH, restoreX, restoreY, restoreW, restoreH, restoreBuf);
+        restoreValid = true;
+      }
     }
 
     compositeFrameRectToCanvas(gif, idxFrame, canvas565);
@@ -793,6 +852,13 @@ static bool playGifPath(const char *path) {
     // Disposal handling (restore to background) is common in these assets.
     if (gif->gce.disposal == 2) {
       clearCanvasRect(canvas565, inW, inH, gif->fx, gif->fy, gif->fw, gif->fh, bgColor);
+    } else if (gif->gce.disposal == 3) {
+      if (restoreValid) {
+        restoreCanvasRect(canvas565, inW, inH, restoreX, restoreY, restoreW, restoreH, restoreBuf);
+      } else {
+        // If we couldn't allocate scratch space, fall back to background clear.
+        clearCanvasRect(canvas565, inW, inH, gif->fx, gif->fy, gif->fw, gif->fh, bgColor);
+      }
     }
   }
 
@@ -803,6 +869,7 @@ static bool playGifPath(const char *path) {
   free(ymap);
   free(idxFrame);
   free(canvas565);
+  if (restoreBuf) free(restoreBuf);
   gifClass.gd_close_gif(gif);
   return true;
 }
@@ -818,7 +885,12 @@ void setup() {
   gfx->begin();
   gfx->setRotation(1);
   expander->pinMode(PCA_TFT_BACKLIGHT, OUTPUT);
+  // Keep backlight off briefly so any early panel sync wobble isn't visible.
+  expander->digitalWrite(PCA_TFT_BACKLIGHT, LOW);
+  gfx->fillScreen(BLACK);
+  delay(120);
   expander->digitalWrite(PCA_TFT_BACKLIGHT, HIGH);
+  delay(20);
 
   drawHeader("GIF Tester", "Mounting filesystem...");
 
