@@ -10,31 +10,47 @@
  * 
  * Features:
  *   - Up to 3 concurrent timers with visual countdown rings
+ *   - Animated activity GIFs for the timer art
  *   - BLE communication with Nicla Voice for voice commands
  *   - Sound effects for feedback (bootup, confirm, cancel, alarm)
  *   - Voice commands: Set, Cancel, Add, Minus, Stop
  */
 
+// Arduino's sketch preprocessor auto-inserts function prototypes near the top of
+// the file. Forward-declare gd_GIF so prototypes that use gd_GIF* compile.
+struct gd_GIF;
+typedef struct gd_GIF gd_GIF;
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
+#include <FS.h>
+#include <LittleFS.h>
+#include <SPIFFS.h>
 #include <ctype.h>
 #include <math.h>
+#include <string.h>
+#include <sys/types.h>
 #include <vector>
 #include <string>
 #include "command_protocol.h"
-#include "font/RacingSansOne_Regular20pt7b.h"
+#include "font/TimerUiFont.h"
 #include <NimBLEDevice.h>
 
 // ======================= FEATURE FLAGS =======================
 #define USE_MIC       0   // Disable local mic (using Nicla Voice instead)
 #define USE_RING      1   // Enable ring animation
+#define USE_GIFS      1   // Enable animated activity art from LittleFS/SPIFFS
 #define USE_SPEAKER   1   // Enable speaker output
 #define USE_BLE       1   // Enable BLE for Nicla Voice communication
 
 // If your speaker is driven by an analog/PWM input (common on STEMMA speaker amps),
 // MP3->I2S output will sound awful. Default to PWM-based SFX.
 #define USE_MP3_SFX   0   // 0 = PWM beep SFX (recommended), 1 = MP3 over I2S
+
+// Filesystem used for activity GIF assets.
+#define USE_LITTLEFS      1
+#define FS_FORMAT_ON_FAIL 0
 
 // ======================= AUDIO LEVELS =======================
 // MP3 SFX on small Class-D amps can clip easily. Start conservative.
@@ -168,7 +184,8 @@ enum TimerThemeId : uint8_t {
   THEME_BREAK = 1,
   THEME_HOMEWORK = 2,
   THEME_BAKING = 3,
-  THEME_EXERCISE = 4
+  THEME_EXERCISE = 4,
+  THEME_COUNT = 5
 };
 
 struct TimerTheme {
@@ -189,72 +206,64 @@ static const uint16_t COLOR_ALERT_RED = hex565(0xff738d);
 static const uint16_t COLOR_ALERT_ORANGE = hex565(0xff9c5a);
 static const uint16_t COLOR_ALERT_START = hex565(0xffeef2);
 
-static const TimerTheme THEME_DEFAULT_STYLE = {
-  hex565(0x24364a),
-  hex565(0xe4f0ff),
-  hex565(0x7fbcff),
-  hex565(0x56718b),
-  WHITE,
-  hex565(0xd9e5f1),
-  hex565(0x9cc3e4),
-  hex565(0xffffff),
-  hex565(0x33495f)
-};
-
-static const TimerTheme THEME_BREAK_STYLE = {
-  hex565(0x4e3a3a),
-  hex565(0xf0dcdf),
-  hex565(0xd8b2b7),
-  hex565(0x7a6466),
-  WHITE,
-  hex565(0xebe7e2),
-  hex565(0xc7cccf),
-  hex565(0x6c4320),
-  hex565(0x988f88)
-};
-
-static const TimerTheme THEME_HOMEWORK_STYLE = {
-  hex565(0x425c79),
-  hex565(0xd8eeff),
-  hex565(0x71bbff),
-  hex565(0x6687a3),
-  WHITE,
-  hex565(0xf2b37d),
-  hex565(0xdfb0cf),
-  hex565(0x8f4d7e),
-  hex565(0xbfd5ea)
-};
-
-static const TimerTheme THEME_BAKING_STYLE = {
-  hex565(0x7f4259),
-  hex565(0xffd7dd),
-  hex565(0xff7d93),
-  hex565(0xa8647b),
-  WHITE,
-  hex565(0xff7c67),
-  hex565(0xffd8a6),
-  hex565(0x5fc5c4),
-  hex565(0xa85870)
-};
-
-static const TimerTheme THEME_EXERCISE_STYLE = {
-  hex565(0x1f5b63),
-  hex565(0xc4eee5),
-  hex565(0x44d0ba),
-  hex565(0x427f82),
-  WHITE,
-  hex565(0xb6e0d8),
-  hex565(0x9dc8c1),
-  hex565(0xdaf5ef),
-  hex565(0x2e7479)
-};
-
-static uint16_t RANDOM_RING_COLORS[] = {
-  hex565(0x71bbff),
-  hex565(0xff7d93),
-  hex565(0x44d0ba),
-  hex565(0xc481ff),
-  hex565(0xff9c5a)
+// Edit activity colors here.
+// Each entry controls the panel background plus the ring gradient/empty ring tint.
+static const TimerTheme THEME_STYLES[THEME_COUNT] = {
+  {
+    hex565(0x46637f),
+    hex565(0xf2f5f8),
+    hex565(0xb5c4d9),
+    hex565(0x90a1b8),
+    WHITE,
+    hex565(0xd8e6f2),
+    hex565(0xa7bed3),
+    hex565(0xffffff),
+    hex565(0x33495f)
+  },
+  {
+    hex565(0x4f403f),
+    hex565(0xf4f4f4),
+    hex565(0xd2c9c6),
+    hex565(0x9b8d8a),
+    WHITE,
+    hex565(0xe9e5e2),
+    hex565(0xc8c8cb),
+    hex565(0x6c4320),
+    hex565(0x7d6f6e)
+  },
+  {
+    hex565(0x496786),
+    hex565(0xf2f5f8),
+    hex565(0xafbdd5),
+    hex565(0x7e94b1),
+    WHITE,
+    hex565(0xdce7f1),
+    hex565(0xb6c9d8),
+    hex565(0xe8f0fa),
+    hex565(0x5b7591)
+  },
+  {
+    hex565(0x86465b),
+    hex565(0xf6e7eb),
+    hex565(0xf79eb2),
+    hex565(0xb27186),
+    WHITE,
+    hex565(0xff9274),
+    hex565(0xffd8ad),
+    hex565(0x6ec8c8),
+    hex565(0x6e3a4d)
+  },
+  {
+    hex565(0x28656c),
+    hex565(0xebf7f4),
+    hex565(0x63d6c7),
+    hex565(0x5a9998),
+    WHITE,
+    hex565(0xc5e7df),
+    hex565(0xa6d4cb),
+    hex565(0xe5f7f3),
+    hex565(0x1e4f57)
+  }
 };
 
 static bool invertGradient = false;
@@ -270,7 +279,6 @@ struct Timer {
   bool active;
   bool ringing;
   uint32_t ring_start_ms;      // When alarm started
-  uint16_t ring_color;
   uint8_t theme_id;
 };
 
@@ -297,23 +305,12 @@ static TimerThemeId detect_theme_id(const char* name) {
 }
 
 static TimerTheme theme_from_id(uint8_t theme_id) {
-  switch (theme_id) {
-    case THEME_BREAK: return THEME_BREAK_STYLE;
-    case THEME_HOMEWORK: return THEME_HOMEWORK_STYLE;
-    case THEME_BAKING: return THEME_BAKING_STYLE;
-    case THEME_EXERCISE: return THEME_EXERCISE_STYLE;
-    default: return THEME_DEFAULT_STYLE;
-  }
+  if (theme_id < THEME_COUNT) return THEME_STYLES[theme_id];
+  return THEME_STYLES[THEME_DEFAULT];
 }
 
 static TimerTheme resolved_theme_for_timer(const Timer& timer) {
-  TimerTheme theme = theme_from_id(timer.theme_id);
-  if (timer.theme_id == THEME_DEFAULT) {
-    theme.ring_end = timer.ring_color;
-    theme.ring_start = lerp565(hex565(0xfafcff), timer.ring_color, 84);
-    theme.ring_empty = lerp565(theme.bg, timer.ring_color, 76);
-  }
-  return theme;
+  return theme_from_id(timer.theme_id);
 }
 
 // ======================= RING BUFFER =======================
@@ -326,11 +323,6 @@ static float current_ring_lut_scale = -1.0f;
 static inline int ring_size_px(float scale) {
   int sz = (int)(RING_SZ * scale + 0.5f);
   return sz < 1 ? 1 : sz;
-}
-
-static uint16_t pick_random_color() {
-  int colorPicker = random(0, (int)(sizeof(RANDOM_RING_COLORS) / sizeof(RANDOM_RING_COLORS[0])));
-  return RANDOM_RING_COLORS[colorPicker];
 }
 
 static void init_ring_lut(float scale = 1.0f) {
@@ -453,9 +445,818 @@ static void draw_ring(float fracRemaining, uint8_t caps,
     }
   }
 
-  gfx->startWrite();
+gfx->startWrite();
   gfx->draw16bitRGBBitmap(x, y, ringbuf, SZ, SZ);
   gfx->endWrite();
+}
+#endif
+
+// ======================= GIF RUNTIME =======================
+#if USE_GIFS
+#if defined(ESP32)
+  #include <esp_heap_caps.h>
+  static void *gif_alloc(size_t bytes) {
+    void *p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p) return p;
+    return malloc(bytes);
+  }
+#else
+  static void *gif_alloc(size_t bytes) { return malloc(bytes); }
+#endif
+
+#ifndef MIN
+#define MIN(A, B) ((A) < (B) ? (A) : (B))
+#endif
+
+#ifndef MAX
+#define MAX(A, B) ((A) > (B) ? (A) : (B))
+#endif
+
+static const char *GIF_ASSET_PATHS[THEME_COUNT] = {
+  nullptr,
+  "/assets/coffee.gif",
+  "/assets/books.gif",
+  "/assets/mixy.gif",
+  "/assets/dumbell.gif"
+};
+
+static const uint32_t MIN_GIF_FRAME_DELAY_MS = 20;
+
+typedef struct gd_Palette {
+  int16_t len;
+  uint16_t colors[256];
+} gd_Palette;
+
+typedef struct gd_GCE {
+  uint16_t delay;
+  uint8_t tindex;
+  uint8_t disposal;
+  uint8_t input;
+  uint8_t transparency;
+} gd_GCE;
+
+typedef struct gd_Entry {
+  int32_t len;
+  uint16_t prefix;
+  uint8_t suffix;
+} gd_Entry;
+
+typedef struct gd_Table {
+  int16_t bulk;
+  int16_t nentries;
+  gd_Entry *entries;
+} gd_Table;
+
+struct gd_GIF {
+  File *fd;
+  off_t anim_start;
+  uint16_t width, height;
+  uint16_t depth;
+  uint16_t loop_count;
+  gd_GCE gce;
+  gd_Palette *palette;
+  gd_Palette lct, gct;
+  void (*plain_text)(
+    struct gd_GIF *gif, uint16_t tx, uint16_t ty,
+    uint16_t tw, uint16_t th, uint8_t cw, uint8_t ch,
+    uint8_t fg, uint8_t bg);
+  void (*comment)(struct gd_GIF *gif);
+  void (*application)(struct gd_GIF *gif, char id[8], char auth[3]);
+  uint16_t fx, fy, fw, fh;
+  uint8_t bgindex;
+  gd_Table *table;
+  bool read_first_frame;
+};
+
+class GifClass {
+public:
+  gd_GIF *gd_open_gif(File *fd) {
+    uint8_t sigver[3];
+    uint16_t width, height, depth;
+    uint8_t fdsz, bgidx, aspect;
+    int16_t gct_sz;
+    gd_GIF *gif;
+
+    gif_buf_last_idx = GIF_BUF_SIZE;
+    gif_buf_idx = gif_buf_last_idx;
+    file_pos = 0;
+
+    gif_buf_read(fd, sigver, 3);
+    if (memcmp(sigver, "GIF", 3) != 0) return nullptr;
+
+    gif_buf_read(fd, sigver, 3);
+    if (memcmp(sigver, "89a", 3) != 0) return nullptr;
+
+    width = gif_buf_read16(fd);
+    height = gif_buf_read16(fd);
+
+    gif_buf_read(fd, &fdsz, 1);
+    if (!(fdsz & 0x80)) return nullptr;
+
+    depth = ((fdsz >> 4) & 7) + 1;
+    gct_sz = 1 << ((fdsz & 0x07) + 1);
+    gif_buf_read(fd, &bgidx, 1);
+    gif_buf_read(fd, &aspect, 1);
+
+    gif = (gd_GIF *)calloc(1, sizeof(*gif));
+    if (!gif) return nullptr;
+
+    gif->fd = fd;
+    gif->width = width;
+    gif->height = height;
+    gif->depth = depth;
+
+    read_palette(fd, &gif->gct, gct_sz);
+    gif->palette = &gif->gct;
+    gif->bgindex = bgidx;
+    gif->anim_start = file_pos;
+
+    gif->table = new_table();
+    gif->read_first_frame = false;
+    if (!gif->table) {
+      free(gif);
+      return nullptr;
+    }
+    return gif;
+  }
+
+  int32_t gd_get_frame(gd_GIF *gif, uint8_t *frame) {
+    char sep;
+    gif->gce = {};
+
+    while (1) {
+      gif_buf_read(gif->fd, (uint8_t *)&sep, 1);
+      if (sep == 0) gif_buf_read(gif->fd, (uint8_t *)&sep, 1);
+      if (sep == ',') break;
+      if (sep == ';') return 0;
+      if (sep == '!') {
+        read_ext(gif);
+      } else {
+        return -1;
+      }
+    }
+
+    if (read_image(gif, frame) == -1) return -1;
+    return 1;
+  }
+
+  void gd_rewind(gd_GIF *gif) {
+    gif->fd->seek(gif->anim_start, SeekSet);
+    file_pos = gif->anim_start;
+    gif_buf_idx = gif_buf_last_idx;
+  }
+
+  void gd_close_gif(gd_GIF *gif) {
+    if (!gif) return;
+    if (gif->fd) gif->fd->close();
+    if (gif->table) free(gif->table);
+    free(gif);
+  }
+
+private:
+  static const int GIF_BUF_SIZE = 1024;
+
+  bool gif_buf_seek(File *fd, int16_t len) {
+    if (len > (gif_buf_last_idx - gif_buf_idx)) {
+      fd->seek(file_pos + len - (gif_buf_last_idx - gif_buf_idx), SeekSet);
+      gif_buf_idx = gif_buf_last_idx;
+    } else {
+      gif_buf_idx += len;
+    }
+    file_pos += len;
+    return true;
+  }
+
+  int16_t gif_buf_read(File *fd, uint8_t *dest, int16_t len) {
+    while (len--) {
+      if (gif_buf_idx == gif_buf_last_idx) {
+        gif_buf_last_idx = fd->read(gif_buf, GIF_BUF_SIZE);
+        gif_buf_idx = 0;
+      }
+      file_pos++;
+      *(dest++) = gif_buf[gif_buf_idx++];
+    }
+    return len;
+  }
+
+  uint8_t gif_buf_read(File *fd) {
+    if (gif_buf_idx == gif_buf_last_idx) {
+      gif_buf_last_idx = fd->read(gif_buf, GIF_BUF_SIZE);
+      gif_buf_idx = 0;
+    }
+    file_pos++;
+    return gif_buf[gif_buf_idx++];
+  }
+
+  uint16_t gif_buf_read16(File *fd) {
+    return gif_buf_read(fd) + (((uint16_t)gif_buf_read(fd)) << 8);
+  }
+
+  void read_palette(File *fd, gd_Palette *dest, int16_t num_colors) {
+    uint8_t r, g, b;
+    dest->len = num_colors;
+    for (int16_t i = 0; i < num_colors; i++) {
+      r = gif_buf_read(fd);
+      g = gif_buf_read(fd);
+      b = gif_buf_read(fd);
+      dest->colors[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3);
+    }
+  }
+
+  void discard_sub_blocks(gd_GIF *gif) {
+    uint8_t len;
+    do {
+      gif_buf_read(gif->fd, &len, 1);
+      gif_buf_seek(gif->fd, len);
+    } while (len);
+  }
+
+  void read_plain_text_ext(gd_GIF *gif) {
+    if (gif->plain_text) {
+      uint16_t tx, ty, tw, th;
+      uint8_t cw, ch, fg, bg;
+      gif_buf_seek(gif->fd, 1);
+      tx = gif_buf_read16(gif->fd);
+      ty = gif_buf_read16(gif->fd);
+      tw = gif_buf_read16(gif->fd);
+      th = gif_buf_read16(gif->fd);
+      cw = gif_buf_read(gif->fd);
+      ch = gif_buf_read(gif->fd);
+      fg = gif_buf_read(gif->fd);
+      bg = gif_buf_read(gif->fd);
+      gif->plain_text(gif, tx, ty, tw, th, cw, ch, fg, bg);
+    } else {
+      gif_buf_seek(gif->fd, 13);
+    }
+    discard_sub_blocks(gif);
+  }
+
+  void read_graphic_control_ext(gd_GIF *gif) {
+    uint8_t rdit;
+    gif_buf_seek(gif->fd, 1);
+    gif_buf_read(gif->fd, &rdit, 1);
+    gif->gce.disposal = (rdit >> 2) & 7;
+    gif->gce.input = rdit & 2;
+    gif->gce.transparency = rdit & 1;
+    gif->gce.delay = gif_buf_read16(gif->fd);
+    gif_buf_read(gif->fd, &gif->gce.tindex, 1);
+    gif_buf_seek(gif->fd, 1);
+  }
+
+  void read_comment_ext(gd_GIF *gif) {
+    if (gif->comment) gif->comment(gif);
+    discard_sub_blocks(gif);
+  }
+
+  void read_application_ext(gd_GIF *gif) {
+    char app_id[8];
+    char app_auth_code[3];
+
+    gif_buf_seek(gif->fd, 1);
+    gif_buf_read(gif->fd, (uint8_t *)app_id, 8);
+    gif_buf_read(gif->fd, (uint8_t *)app_auth_code, 3);
+
+    if (!strncmp(app_id, "NETSCAPE", sizeof(app_id))) {
+      gif_buf_seek(gif->fd, 2);
+      gif->loop_count = gif_buf_read16(gif->fd);
+      gif_buf_seek(gif->fd, 1);
+    } else if (gif->application) {
+      gif->application(gif, app_id, app_auth_code);
+      discard_sub_blocks(gif);
+    } else {
+      discard_sub_blocks(gif);
+    }
+  }
+
+  void read_ext(gd_GIF *gif) {
+    uint8_t label;
+    gif_buf_read(gif->fd, &label, 1);
+    switch (label) {
+      case 0x01: read_plain_text_ext(gif); break;
+      case 0xF9: read_graphic_control_ext(gif); break;
+      case 0xFE: read_comment_ext(gif); break;
+      case 0xFF: read_application_ext(gif); break;
+      default:
+        discard_sub_blocks(gif);
+        break;
+    }
+  }
+
+  gd_Table *new_table() {
+    int32_t s = (int32_t)sizeof(gd_Table) + (int32_t)(sizeof(gd_Entry) * 4096);
+    gd_Table *table = (gd_Table *)malloc((size_t)s);
+    if (!table) return nullptr;
+    table->entries = (gd_Entry *)&table[1];
+    return table;
+  }
+
+  void reset_table(gd_Table *table, uint16_t key_size) {
+    table->nentries = (1 << key_size) + 2;
+    for (uint16_t key = 0; key < (1 << key_size); key++) {
+      table->entries[key] = (gd_Entry){1, 0xFFF, (uint8_t)key};
+    }
+  }
+
+  int32_t add_entry(gd_Table *table, int32_t len, uint16_t prefix, uint8_t suffix) {
+    table->entries[table->nentries] = (gd_Entry){len, prefix, suffix};
+    table->nentries++;
+    if ((table->nentries & (table->nentries - 1)) == 0) return 1;
+    return 0;
+  }
+
+  uint16_t get_key(gd_GIF *gif, uint16_t key_size, uint8_t *sub_len, uint8_t *shift, uint8_t *byte) {
+    int16_t bits_read;
+    int16_t rpad;
+    int16_t frag_size;
+    uint16_t key = 0;
+
+    for (bits_read = 0; bits_read < (int16_t)key_size; bits_read += frag_size) {
+      rpad = (*shift + bits_read) % 8;
+      if (rpad == 0) {
+        if (*sub_len == 0) gif_buf_read(gif->fd, sub_len, 1);
+        gif_buf_read(gif->fd, byte, 1);
+        (*sub_len)--;
+      }
+      frag_size = MIN((int16_t)key_size - bits_read, (int16_t)8 - rpad);
+      key |= ((uint16_t)((*byte) >> rpad)) << bits_read;
+    }
+    key &= (1 << key_size) - 1;
+    *shift = (*shift + key_size) % 8;
+    return key;
+  }
+
+  int16_t interlaced_line_index(int16_t h, int16_t y) {
+    int16_t p;
+    p = (h - 1) / 8 + 1;
+    if (y < p) return y * 8;
+    y -= p;
+    p = (h - 5) / 8 + 1;
+    if (y < p) return y * 8 + 4;
+    y -= p;
+    p = (h - 3) / 4 + 1;
+    if (y < p) return y * 4 + 2;
+    y -= p;
+    return y * 2 + 1;
+  }
+
+  int8_t read_image_data(gd_GIF *gif, int16_t interlace, uint8_t *frame) {
+    uint8_t sub_len, shift, byte, table_is_full = 0;
+    uint16_t init_key_size, key_size;
+    int32_t frm_off, str_len = 0, p, x, y;
+    uint16_t key, clear, stop;
+    int32_t ret;
+    gd_Entry entry = {0, 0, 0};
+
+    gif_buf_read(gif->fd, &byte, 1);
+    key_size = (uint16_t)byte;
+    clear = 1 << key_size;
+    stop = clear + 1;
+
+    if (!gif->table) return -1;
+    reset_table(gif->table, key_size);
+
+    key_size++;
+    init_key_size = key_size;
+    sub_len = shift = 0;
+    key = get_key(gif, key_size, &sub_len, &shift, &byte);
+    frm_off = 0;
+    ret = 0;
+
+    while (1) {
+      if (key == clear) {
+        key_size = init_key_size;
+        gif->table->nentries = (1 << (key_size - 1)) + 2;
+        table_is_full = 0;
+      } else if (!table_is_full) {
+        ret = add_entry(gif->table, str_len + 1, key, entry.suffix);
+        if (gif->table->nentries == 0x1000) {
+          ret = 0;
+          table_is_full = 1;
+        }
+      }
+
+      key = get_key(gif, key_size, &sub_len, &shift, &byte);
+      if (key == clear) continue;
+      if (key == stop) break;
+      if (ret == 1) key_size++;
+
+      entry = gif->table->entries[key];
+      str_len = entry.len;
+
+      while (1) {
+        p = frm_off + entry.len - 1;
+        x = p % gif->fw;
+        y = p / gif->fw;
+        if (interlace) y = interlaced_line_index((int16_t)gif->fh, (int16_t)y);
+
+        frame[(gif->fy + y) * gif->width + gif->fx + x] = entry.suffix;
+
+        if (entry.prefix == 0xFFF) break;
+        entry = gif->table->entries[entry.prefix];
+      }
+
+      frm_off += str_len;
+      if (key < (uint16_t)gif->table->nentries - 1 && !table_is_full) {
+        gif->table->entries[gif->table->nentries - 1].suffix = entry.suffix;
+      }
+    }
+
+    gif_buf_read(gif->fd, &sub_len, 1);
+    gif->read_first_frame = true;
+    return 0;
+  }
+
+  int8_t read_image(gd_GIF *gif, uint8_t *frame) {
+    uint8_t fisrz;
+    int16_t interlace;
+
+    gif->fx = gif_buf_read16(gif->fd);
+    gif->fy = gif_buf_read16(gif->fd);
+    gif->fw = gif_buf_read16(gif->fd);
+    gif->fh = gif_buf_read16(gif->fd);
+    gif_buf_read(gif->fd, &fisrz, 1);
+
+    interlace = fisrz & 0x40;
+    if (fisrz & 0x80) {
+      read_palette(gif->fd, &gif->lct, 1 << ((fisrz & 0x07) + 1));
+      gif->palette = &gif->lct;
+    } else {
+      gif->palette = &gif->gct;
+    }
+
+    return read_image_data(gif, interlace, frame);
+  }
+
+  int16_t gif_buf_last_idx, gif_buf_idx;
+  int32_t file_pos;
+  uint8_t gif_buf[GIF_BUF_SIZE];
+};
+
+struct ThemeGifState {
+  File file;
+  gd_GIF *gif = nullptr;
+  uint8_t *idx_frame = nullptr;
+  uint16_t *canvas565 = nullptr;
+  uint16_t *restore_buf = nullptr;
+  size_t pixels = 0;
+  size_t restore_buf_pixels = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
+  uint16_t bg_color = 0;
+  uint8_t pending_disposal = 0;
+  uint16_t pending_x = 0;
+  uint16_t pending_y = 0;
+  uint16_t pending_w = 0;
+  uint16_t pending_h = 0;
+  bool pending_restore_valid = false;
+  uint32_t next_frame_ms = 0;
+  bool ready = false;
+  bool has_frame = false;
+  bool warned = false;
+};
+
+static GifClass gifClass;
+static bool g_gif_fs_ready = false;
+static ThemeGifState g_theme_gifs[THEME_COUNT];
+static uint16_t *g_gif_draw_buf = nullptr;
+static uint16_t *g_gif_xmap = nullptr;
+static uint16_t *g_gif_ymap = nullptr;
+static size_t g_gif_draw_pixels = 0;
+static size_t g_gif_xmap_len = 0;
+static size_t g_gif_ymap_len = 0;
+
+static FS &gifFS() {
+#if USE_LITTLEFS
+  return LittleFS;
+#else
+  return SPIFFS;
+#endif
+}
+
+static const char *fsName() {
+#if USE_LITTLEFS
+  return "LittleFS";
+#else
+  return "SPIFFS";
+#endif
+}
+
+static void fill_canvas(uint16_t *canvas, size_t pixels, uint16_t color) {
+  if (!canvas) return;
+  for (size_t i = 0; i < pixels; i++) canvas[i] = color;
+}
+
+static void clearCanvasRect(uint16_t *canvas, uint16_t canvasW, uint16_t canvasH,
+                            uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                            uint16_t color) {
+  if (!canvas) return;
+  if (x >= canvasW || y >= canvasH) return;
+  if (x + w > canvasW) w = canvasW - x;
+  if (y + h > canvasH) h = canvasH - y;
+  for (uint16_t row = 0; row < h; row++) {
+    uint16_t *dst = canvas + (size_t)(y + row) * canvasW + x;
+    for (uint16_t col = 0; col < w; col++) dst[col] = color;
+  }
+}
+
+static void copyCanvasRect(const uint16_t *canvas, uint16_t canvasW, uint16_t canvasH,
+                           uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                           uint16_t *out) {
+  if (!canvas || !out) return;
+  if (x >= canvasW || y >= canvasH) return;
+  if (x + w > canvasW) w = canvasW - x;
+  if (y + h > canvasH) h = canvasH - y;
+  for (uint16_t row = 0; row < h; row++) {
+    const uint16_t *src = canvas + (size_t)(y + row) * canvasW + x;
+    uint16_t *dst = out + (size_t)row * w;
+    memcpy(dst, src, (size_t)w * sizeof(uint16_t));
+  }
+}
+
+static void restoreCanvasRect(uint16_t *canvas, uint16_t canvasW, uint16_t canvasH,
+                              uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                              const uint16_t *srcRect) {
+  if (!canvas || !srcRect) return;
+  if (x >= canvasW || y >= canvasH) return;
+  if (x + w > canvasW) w = canvasW - x;
+  if (y + h > canvasH) h = canvasH - y;
+  for (uint16_t row = 0; row < h; row++) {
+    uint16_t *dst = canvas + (size_t)(y + row) * canvasW + x;
+    const uint16_t *src = srcRect + (size_t)row * w;
+    memcpy(dst, src, (size_t)w * sizeof(uint16_t));
+  }
+}
+
+static void compositeFrameRectToCanvas(gd_GIF *gif, const uint8_t *idxFrame, uint16_t *canvas565) {
+  const bool hasTrans = gif->gce.transparency != 0;
+  const uint8_t tindex = gif->gce.tindex;
+  const uint16_t *colors = gif->palette->colors;
+
+  for (uint16_t j = 0; j < gif->fh; j++) {
+    size_t rowBase = (size_t)(gif->fy + j) * gif->width + gif->fx;
+    for (uint16_t k = 0; k < gif->fw; k++) {
+      uint8_t idx = idxFrame[rowBase + k];
+      if (!hasTrans || idx != tindex) {
+        canvas565[rowBase + k] = colors[idx];
+      }
+    }
+  }
+}
+
+static void scaleCanvasToOutbuf(const uint16_t *canvas, uint16_t inW, uint16_t inH,
+                                uint16_t *outbuf, int outW, int outH,
+                                const uint16_t *xmap, const uint16_t *ymap) {
+  for (int y = 0; y < outH; y++) {
+    uint16_t sy = ymap[y];
+    const uint16_t *srcRow = canvas + (size_t)sy * inW;
+    uint16_t *dstRow = outbuf + (size_t)y * outW;
+    for (int x = 0; x < outW; x++) {
+      dstRow[x] = srcRow[xmap[x]];
+    }
+  }
+}
+
+static void release_theme_gif(ThemeGifState &state) {
+  if (state.gif) gifClass.gd_close_gif(state.gif);
+  if (state.idx_frame) free(state.idx_frame);
+  if (state.canvas565) free(state.canvas565);
+  if (state.restore_buf) free(state.restore_buf);
+  state.file = File();
+  state.gif = nullptr;
+  state.idx_frame = nullptr;
+  state.canvas565 = nullptr;
+  state.restore_buf = nullptr;
+  state.pixels = 0;
+  state.restore_buf_pixels = 0;
+  state.width = 0;
+  state.height = 0;
+  state.bg_color = 0;
+  state.pending_disposal = 0;
+  state.pending_x = 0;
+  state.pending_y = 0;
+  state.pending_w = 0;
+  state.pending_h = 0;
+  state.pending_restore_valid = false;
+  state.next_frame_ms = 0;
+  state.ready = false;
+  state.has_frame = false;
+  state.warned = false;
+}
+
+static bool ensure_gif_draw_buffers(int outW, int outH) {
+  size_t need_pixels = (size_t)outW * (size_t)outH;
+  if (need_pixels > g_gif_draw_pixels) {
+    if (g_gif_draw_buf) free(g_gif_draw_buf);
+    g_gif_draw_buf = (uint16_t *)gif_alloc(need_pixels * sizeof(uint16_t));
+    if (!g_gif_draw_buf) {
+      g_gif_draw_pixels = 0;
+      return false;
+    }
+    g_gif_draw_pixels = need_pixels;
+  }
+  if ((size_t)outW > g_gif_xmap_len) {
+    if (g_gif_xmap) free(g_gif_xmap);
+    g_gif_xmap = (uint16_t *)gif_alloc((size_t)outW * sizeof(uint16_t));
+    if (!g_gif_xmap) {
+      g_gif_xmap_len = 0;
+      return false;
+    }
+    g_gif_xmap_len = (size_t)outW;
+  }
+  if ((size_t)outH > g_gif_ymap_len) {
+    if (g_gif_ymap) free(g_gif_ymap);
+    g_gif_ymap = (uint16_t *)gif_alloc((size_t)outH * sizeof(uint16_t));
+    if (!g_gif_ymap) {
+      g_gif_ymap_len = 0;
+      return false;
+    }
+    g_gif_ymap_len = (size_t)outH;
+  }
+  return g_gif_draw_buf && g_gif_xmap && g_gif_ymap;
+}
+
+static bool init_theme_gif(uint8_t theme_id, uint16_t bg_color) {
+  if (!g_gif_fs_ready || theme_id >= THEME_COUNT) return false;
+  const char *path = GIF_ASSET_PATHS[theme_id];
+  if (!path) return false;
+
+  ThemeGifState &state = g_theme_gifs[theme_id];
+  if (state.ready && state.bg_color == bg_color) return true;
+
+  release_theme_gif(state);
+
+  state.file = gifFS().open(path, "r");
+  if (!state.file || state.file.isDirectory()) {
+    if (!state.warned) {
+      Serial.printf("[GIF] Missing asset: %s\n", path);
+      state.warned = true;
+    }
+    state.file = File();
+    return false;
+  }
+
+  state.gif = gifClass.gd_open_gif(&state.file);
+  if (!state.gif) {
+    Serial.printf("[GIF] Failed to open GIF: %s\n", path);
+    state.file.close();
+    state.file = File();
+    return false;
+  }
+
+  state.width = state.gif->width;
+  state.height = state.gif->height;
+  state.pixels = (size_t)state.width * (size_t)state.height;
+  state.idx_frame = (uint8_t *)gif_alloc(state.pixels);
+  state.canvas565 = (uint16_t *)gif_alloc(state.pixels * sizeof(uint16_t));
+  if (!state.idx_frame || !state.canvas565) {
+    Serial.printf("[GIF] OOM preparing %s (%ux%u)\n", path, (unsigned)state.width, (unsigned)state.height);
+    release_theme_gif(state);
+    return false;
+  }
+
+  state.bg_color = bg_color;
+  fill_canvas(state.canvas565, state.pixels, bg_color);
+  state.ready = true;
+  state.has_frame = false;
+  state.next_frame_ms = 0;
+  return true;
+}
+
+static void apply_pending_disposal(ThemeGifState &state) {
+  if (!state.ready || !state.canvas565 || state.pending_disposal == 0) return;
+
+  if (state.pending_disposal == 2) {
+    clearCanvasRect(state.canvas565, state.width, state.height,
+                    state.pending_x, state.pending_y, state.pending_w, state.pending_h,
+                    state.bg_color);
+  } else if (state.pending_disposal == 3) {
+    if (state.pending_restore_valid && state.restore_buf) {
+      restoreCanvasRect(state.canvas565, state.width, state.height,
+                        state.pending_x, state.pending_y, state.pending_w, state.pending_h,
+                        state.restore_buf);
+    } else {
+      clearCanvasRect(state.canvas565, state.width, state.height,
+                      state.pending_x, state.pending_y, state.pending_w, state.pending_h,
+                      state.bg_color);
+    }
+  }
+
+  state.pending_disposal = 0;
+  state.pending_restore_valid = false;
+}
+
+static bool advance_theme_gif(uint8_t theme_id, uint32_t now) {
+  if (theme_id >= THEME_COUNT) return false;
+  ThemeGifState &state = g_theme_gifs[theme_id];
+  if (!state.ready || !state.gif || !state.canvas565 || !state.idx_frame) return false;
+  if (state.has_frame && (int32_t)(now - state.next_frame_ms) < 0) return false;
+
+  apply_pending_disposal(state);
+
+  int32_t res = gifClass.gd_get_frame(state.gif, state.idx_frame);
+  if (res == 0) {
+    gifClass.gd_rewind(state.gif);
+    fill_canvas(state.canvas565, state.pixels, state.bg_color);
+    res = gifClass.gd_get_frame(state.gif, state.idx_frame);
+  }
+  if (res < 0) {
+    Serial.printf("[GIF] Decode error on theme %u\n", (unsigned)theme_id);
+    release_theme_gif(state);
+    return false;
+  }
+
+  bool restore_valid = false;
+  if (state.gif->gce.disposal == 3) {
+    size_t need = (size_t)state.gif->fw * (size_t)state.gif->fh;
+    if (need > state.restore_buf_pixels) {
+      if (state.restore_buf) free(state.restore_buf);
+      state.restore_buf = (uint16_t *)gif_alloc(need * sizeof(uint16_t));
+      state.restore_buf_pixels = state.restore_buf ? need : 0;
+    }
+    if (state.restore_buf) {
+      copyCanvasRect(state.canvas565, state.width, state.height,
+                     state.gif->fx, state.gif->fy, state.gif->fw, state.gif->fh,
+                     state.restore_buf);
+      restore_valid = true;
+    }
+  }
+
+  compositeFrameRectToCanvas(state.gif, state.idx_frame, state.canvas565);
+  state.pending_disposal = state.gif->gce.disposal;
+  state.pending_x = state.gif->fx;
+  state.pending_y = state.gif->fy;
+  state.pending_w = state.gif->fw;
+  state.pending_h = state.gif->fh;
+  state.pending_restore_valid = restore_valid;
+  state.has_frame = true;
+
+  uint32_t delay_ms = (uint32_t)state.gif->gce.delay * 10;
+  if (delay_ms < MIN_GIF_FRAME_DELAY_MS) delay_ms = MIN_GIF_FRAME_DELAY_MS;
+  state.next_frame_ms = now + delay_ms;
+  return true;
+}
+
+static bool prepare_theme_gif(uint8_t theme_id, uint16_t bg_color, uint32_t now) {
+  if (!init_theme_gif(theme_id, bg_color)) return false;
+  ThemeGifState &state = g_theme_gifs[theme_id];
+  if (!state.has_frame || (int32_t)(now - state.next_frame_ms) >= 0) {
+    return advance_theme_gif(theme_id, now);
+  }
+  return false;
+}
+
+static bool draw_theme_gif(uint8_t theme_id, int box_x, int box_y, int box_w, int box_h) {
+  if (theme_id >= THEME_COUNT || box_w <= 0 || box_h <= 0) return false;
+  ThemeGifState &state = g_theme_gifs[theme_id];
+  if (!state.ready || !state.has_frame || !state.canvas565) return false;
+
+  int outW = box_w;
+  int outH = (int)((int64_t)box_w * (int64_t)state.height / (int64_t)state.width);
+  if (outH > box_h) {
+    outH = box_h;
+    outW = (int)((int64_t)box_h * (int64_t)state.width / (int64_t)state.height);
+  }
+  if (outW < 1) outW = 1;
+  if (outH < 1) outH = 1;
+
+  if (!ensure_gif_draw_buffers(outW, outH)) return false;
+
+  for (int x = 0; x < outW; x++) {
+    g_gif_xmap[x] = (uint16_t)(((uint32_t)x * (uint32_t)state.width) / (uint32_t)outW);
+  }
+  for (int y = 0; y < outH; y++) {
+    g_gif_ymap[y] = (uint16_t)(((uint32_t)y * (uint32_t)state.height) / (uint32_t)outH);
+  }
+
+  scaleCanvasToOutbuf(state.canvas565, state.width, state.height,
+                      g_gif_draw_buf, outW, outH, g_gif_xmap, g_gif_ymap);
+
+  int draw_x = box_x + (box_w - outW) / 2;
+  int draw_y = box_y + (box_h - outH) / 2;
+
+  gfx->startWrite();
+  gfx->draw16bitRGBBitmap(draw_x, draw_y, g_gif_draw_buf, outW, outH);
+  gfx->endWrite();
+  return true;
+}
+
+static bool sync_theme_gifs(uint32_t now) {
+  bool any_changed = false;
+  bool needed[THEME_COUNT] = {false};
+
+  for (int i = 0; i < MAX_TIMERS; i++) {
+    if (!timers[i].active) continue;
+    if (timers[i].theme_id < THEME_COUNT && GIF_ASSET_PATHS[timers[i].theme_id]) {
+      needed[timers[i].theme_id] = true;
+      TimerTheme theme = theme_from_id(timers[i].theme_id);
+      if (prepare_theme_gif(timers[i].theme_id, theme.bg, now)) any_changed = true;
+    }
+  }
+
+  for (uint8_t theme_id = 0; theme_id < THEME_COUNT; theme_id++) {
+    if (!needed[theme_id]) release_theme_gif(g_theme_gifs[theme_id]);
+  }
+  return any_changed;
 }
 #endif
 
@@ -734,10 +1535,6 @@ static bool createTimer(const char* name, uint32_t duration_seconds) {
   timers[slot].active = true;
   timers[slot].ringing = false;
   timers[slot].theme_id = detect_theme_id(name);
-  timers[slot].ring_color = pick_random_color();
-  if (timers[slot].theme_id != THEME_DEFAULT) {
-    timers[slot].ring_color = theme_from_id(timers[slot].theme_id).ring_end;
-  }
   
   updateActiveCount();
   requestFullRedraw();
@@ -867,22 +1664,26 @@ struct PanelLayout {
   int y;
   int w;
   int h;
-  int title_x;
+  int title_anchor_x;
   int title_y;
   uint8_t title_scale;
-  int time_x;
+  bool title_centered;
+  int time_anchor_x;
   int time_y;
   uint8_t time_scale;
-  int art_x;
-  int art_y;
-  int art_size;
+  bool time_centered;
+  bool show_art;
+  int art_box_x;
+  int art_box_y;
+  int art_box_w;
+  int art_box_h;
   int ring_cx;
   int ring_cy;
   float ring_scale;
 };
 
 static void configure_ui_font(uint8_t scale) {
-  gfx->setFont(&RacingSansOne_Regular20pt7b);
+  gfx->setFont(&TIMER_UI_FONT_FAMILY);
   gfx->setTextSize(scale);
   gfx->setTextWrap(false);
 }
@@ -916,6 +1717,15 @@ static void draw_ui_text_centered(const char* text, int center_x, int top, uint1
   draw_ui_text(text, left, top, color, scale);
 }
 
+static void draw_ui_text_layout(const char* text, int anchor_x, int top,
+                                bool centered, uint16_t color, uint8_t scale) {
+  if (centered) {
+    draw_ui_text_centered(text, anchor_x, top, color, scale);
+  } else {
+    draw_ui_text(text, anchor_x, top, color, scale);
+  }
+}
+
 static PanelLayout panel_layout_for(int active_count, int slot) {
   PanelLayout layout = {};
   layout.y = 0;
@@ -924,48 +1734,60 @@ static PanelLayout panel_layout_for(int active_count, int slot) {
   if (active_count == 1) {
     layout.x = 0;
     layout.w = 960;
-    layout.title_x = 46;
-    layout.title_y = 42;
+    layout.title_anchor_x = 52;
+    layout.title_y = 34;
     layout.title_scale = 1;
-    layout.time_x = 46;
-    layout.time_y = 86;
+    layout.title_centered = false;
+    layout.time_anchor_x = 52;
+    layout.time_y = 84;
     layout.time_scale = 2;
-    layout.art_x = 164;
-    layout.art_y = 220;
-    layout.art_size = 120;
-    layout.ring_cx = 728;
+    layout.time_centered = false;
+    layout.show_art = true;
+    layout.art_box_x = 30;
+    layout.art_box_y = 146;
+    layout.art_box_w = 280;
+    layout.art_box_h = 144;
+    layout.ring_cx = 732;
     layout.ring_cy = 160;
-    layout.ring_scale = 0.96f;
+    layout.ring_scale = 0.99f;
   } else if (active_count == 2) {
     layout.x = slot * 480;
     layout.w = 480;
-    layout.title_x = layout.x + 28;
-    layout.title_y = 34;
+    layout.title_anchor_x = layout.x + 26;
+    layout.title_y = 30;
     layout.title_scale = 1;
-    layout.time_x = layout.x + 28;
+    layout.title_centered = false;
+    layout.time_anchor_x = layout.x + 26;
     layout.time_y = 78;
     layout.time_scale = 1;
-    layout.art_x = layout.x + 108;
-    layout.art_y = 220;
-    layout.art_size = 104;
-    layout.ring_cx = layout.x + 344;
+    layout.time_centered = false;
+    layout.show_art = true;
+    layout.art_box_x = layout.x + 18;
+    layout.art_box_y = 154;
+    layout.art_box_w = 208;
+    layout.art_box_h = 136;
+    layout.ring_cx = layout.x + 366;
     layout.ring_cy = 164;
-    layout.ring_scale = 0.80f;
+    layout.ring_scale = 0.84f;
   } else {
     layout.x = slot * 320;
     layout.w = 320;
-    layout.title_x = layout.x + 18;
+    layout.title_anchor_x = layout.x + 160;
     layout.title_y = 22;
     layout.title_scale = 1;
-    layout.time_x = layout.x + 18;
-    layout.time_y = 56;
+    layout.title_centered = true;
+    layout.time_anchor_x = layout.x + 160;
+    layout.time_y = 58;
     layout.time_scale = 1;
-    layout.art_x = layout.x + 82;
-    layout.art_y = 224;
-    layout.art_size = 72;
-    layout.ring_cx = layout.x + 236;
-    layout.ring_cy = 148;
-    layout.ring_scale = 0.58f;
+    layout.time_centered = true;
+    layout.show_art = false;
+    layout.art_box_x = 0;
+    layout.art_box_y = 0;
+    layout.art_box_w = 0;
+    layout.art_box_h = 0;
+    layout.ring_cx = layout.x + 160;
+    layout.ring_cy = 218;
+    layout.ring_scale = 0.66f;
   }
 
   return layout;
@@ -1041,13 +1863,41 @@ static void draw_theme_illustration(uint8_t theme_id, int cx, int cy, int size, 
   }
 }
 
+static void draw_timer_art(const PanelLayout& layout, const Timer& timer, const TimerTheme& theme) {
+  if (!layout.show_art) return;
+
+  #if USE_GIFS
+  if (draw_theme_gif(timer.theme_id,
+                     layout.art_box_x,
+                     layout.art_box_y,
+                     layout.art_box_w,
+                     layout.art_box_h)) {
+    return;
+  }
+  #endif
+
+  int size = layout.art_box_w < layout.art_box_h ? layout.art_box_w : layout.art_box_h;
+  draw_theme_illustration(timer.theme_id,
+                          layout.art_box_x + layout.art_box_w / 2,
+                          layout.art_box_y + layout.art_box_h / 2,
+                          size,
+                          theme);
+}
+
 static void draw_panel_backdrop(const PanelLayout& layout, const TimerTheme& theme) {
-  gfx->fillCircle(layout.art_x, layout.art_y, layout.art_size / 2 + 12, theme.art_shadow);
-  gfx->fillCircle(layout.art_x - layout.art_size / 3, layout.art_y - layout.art_size / 3,
-                  layout.art_size / 8, lerp565(theme.ring_start, theme.art_primary, 90));
   gfx->fillCircle(layout.ring_cx, layout.ring_cy,
                   ring_size_px(layout.ring_scale) / 2 + 10,
                   lerp565(theme.bg, theme.ring_empty, 72));
+  if (layout.show_art) {
+    gfx->fillCircle(layout.art_box_x + layout.art_box_w - 26,
+                    layout.art_box_y + 20,
+                    7,
+                    lerp565(theme.ring_start, theme.art_primary, 110));
+    gfx->fillCircle(layout.art_box_x + layout.art_box_w - 48,
+                    layout.art_box_y + 44,
+                    4,
+                    lerp565(theme.ring_start, theme.art_secondary, 100));
+  }
 }
 
 static void draw_timer_ring(const PanelLayout& layout, const Timer& timer, float frac, uint32_t now) {
@@ -1081,9 +1931,11 @@ static void draw_timer_panel(const PanelLayout& layout, const Timer& timer, uint
 
   gfx->fillRect(layout.x, layout.y, layout.w, layout.h, theme.bg);
   draw_panel_backdrop(layout, theme);
-  draw_theme_illustration(timer.theme_id, layout.art_x, layout.art_y, layout.art_size, theme);
-  draw_ui_text(timer.name, layout.title_x, layout.title_y, theme.text, layout.title_scale);
-  draw_ui_text(hhmmss, layout.time_x, layout.time_y, theme.text, layout.time_scale);
+  draw_timer_art(layout, timer, theme);
+  draw_ui_text_layout(timer.name, layout.title_anchor_x, layout.title_y,
+                      layout.title_centered, theme.text, layout.title_scale);
+  draw_ui_text_layout(hhmmss, layout.time_anchor_x, layout.time_y,
+                      layout.time_centered, theme.text, layout.time_scale);
 
   float frac = 0.0f;
   if (timer.total_seconds > 0) {
@@ -1098,12 +1950,6 @@ static void drawNoTimersScreen() {
   draw_ui_text_centered("Say 'Set a timer' to begin", 480, 90, COLOR_IDLE_SUB, 1);
   draw_ui_text_centered("or connect via Bluetooth", 480, 128, COLOR_IDLE_SUB, 1);
 
-  const TimerTheme previews[] = {
-    THEME_BREAK_STYLE,
-    THEME_HOMEWORK_STYLE,
-    THEME_BAKING_STYLE,
-    THEME_EXERCISE_STYLE
-  };
   const uint8_t previewIds[] = {
     THEME_BREAK,
     THEME_HOMEWORK,
@@ -1113,11 +1959,12 @@ static void drawNoTimersScreen() {
   const int centers[] = {156, 364, 572, 780};
 
   for (int i = 0; i < 4; i++) {
-    draw_theme_illustration(previewIds[i], centers[i] - 28, 236, 58, previews[i]);
+    TimerTheme preview = theme_from_id(previewIds[i]);
+    draw_theme_illustration(previewIds[i], centers[i] - 28, 236, 58, preview);
     #if USE_RING
     ensure_ring_lut(0.38f);
     int ring_size = ring_size_px(0.38f);
-    draw_ring(0.84f, CAP_LEAD, previews[i].ring_start, previews[i].ring_end, previews[i].ring_empty,
+    draw_ring(0.84f, CAP_LEAD, preview.ring_start, preview.ring_end, preview.ring_empty,
               centers[i] - ring_size / 2, 186, COLOR_IDLE_BG, 0.38f);
     #endif
   }
@@ -1131,8 +1978,14 @@ static uint32_t last_ring_ms = 0;
 static char last_text[MAX_TIMERS][9] = {"--------", "--------", "--------"};
 static char last_name[MAX_TIMERS][16] = {"", "", ""};
 static bool needs_full_redraw = true;
+static bool full_redraw_resets_timebase = true;
 
 static void requestFullRedraw() {
+  needs_full_redraw = true;
+  full_redraw_resets_timebase = true;
+}
+
+static void requestVisualRedraw() {
   needs_full_redraw = true;
 }
 
@@ -1151,6 +2004,26 @@ void setup() {
   
   Serial.println("[BOOT] Display initialized");
 
+  #if USE_GIFS
+  #if USE_LITTLEFS
+  g_gif_fs_ready = LittleFS.begin(false);
+  if (!g_gif_fs_ready && FS_FORMAT_ON_FAIL) {
+    g_gif_fs_ready = LittleFS.begin(true);
+  }
+  #else
+  g_gif_fs_ready = SPIFFS.begin(false);
+  if (!g_gif_fs_ready && FS_FORMAT_ON_FAIL) {
+    g_gif_fs_ready = SPIFFS.begin(true);
+  }
+  #endif
+
+  if (g_gif_fs_ready) {
+    Serial.printf("[GIF] Mounted %s\n", fsName());
+  } else {
+    Serial.printf("[GIF] %s mount failed, using fallback art\n", fsName());
+  }
+  #endif
+
   // Initialize timers
   for (int i = 0; i < MAX_TIMERS; i++) {
     sprintf(timers[i].name, "Timer %d", i + 1);
@@ -1158,7 +2031,6 @@ void setup() {
     timers[i].seconds_left = 0;
     timers[i].active = false;
     timers[i].ringing = false;
-    timers[i].ring_color = RANDOM_RING_COLORS[0];
     timers[i].theme_id = THEME_DEFAULT;
   }
 
@@ -1317,13 +2189,23 @@ void loop() {
     last_active_count = active_timer_count;
     requestFullRedraw();
   }
+
+  #if USE_GIFS
+  if (sync_theme_gifs(now)) {
+    requestVisualRedraw();
+  }
+  #endif
   
   // Full redraw if needed
   if (needs_full_redraw) {
+    bool redraw_resets_timebase = full_redraw_resets_timebase;
     needs_full_redraw = false;
+    full_redraw_resets_timebase = false;
     renderTimers();
-    last_second_ms = now;
-    last_ring_ms = now;
+    if (redraw_resets_timebase) {
+      last_second_ms = now;
+      last_ring_ms = now;
+    }
   }
   
   // === Update countdown once per second ===
