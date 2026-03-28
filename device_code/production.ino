@@ -15,11 +15,18 @@
  *   - Sound effects for feedback (bootup, confirm, cancel, alarm)
  *   - Voice commands: Set, Cancel, Add, Minus, Stop
  */
+#include <stdint.h>
 
 // Arduino's sketch preprocessor auto-inserts function prototypes near the top of
-// the file. Forward-declare gd_GIF so prototypes that use gd_GIF* compile.
+// the file. Forward-declare custom types used in function signatures so those
+// auto-generated prototypes compile cleanly.
 struct gd_GIF;
 typedef struct gd_GIF gd_GIF;
+enum TimerThemeId : uint8_t;
+struct TimerTheme;
+struct Timer;
+struct ThemeGifState;
+struct PanelLayout;
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -157,7 +164,7 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
 );
 
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
-  320, 960, rgbpanel, 0, true,
+  320, 960, rgbpanel, 0, false,
   expander, GFX_NOT_DEFINED,
   HD458002C40_init_operations, sizeof(HD458002C40_init_operations),
   80
@@ -202,6 +209,8 @@ struct TimerTheme {
 
 static const uint16_t COLOR_IDLE_BG = hex565(0x181a20);
 static const uint16_t COLOR_IDLE_SUB = hex565(0x99a2b1);
+static const uint16_t COLOR_IDLE_BORDER = hex565(0xffffff);
+static const uint16_t COLOR_IDLE_BORDER_SOFT = hex565(0xc7d1e2);
 static const uint16_t COLOR_ALERT_RED = hex565(0xff738d);
 static const uint16_t COLOR_ALERT_ORANGE = hex565(0xff9c5a);
 static const uint16_t COLOR_ALERT_START = hex565(0xffeef2);
@@ -267,6 +276,112 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
 };
 
 static bool invertGradient = false;
+
+static void point_on_rect_perimeter(int left, int top, int right, int bottom,
+                                    int dist, int* x, int* y) {
+  int width = right - left;
+  int height = bottom - top;
+  int perimeter = (width + height) * 2;
+  if (perimeter <= 0) {
+    *x = left;
+    *y = top;
+    return;
+  }
+
+  dist %= perimeter;
+  if (dist < 0) dist += perimeter;
+
+  if (dist < width) {
+    *x = left + dist;
+    *y = top;
+    return;
+  }
+  dist -= width;
+
+  if (dist < height) {
+    *x = right;
+    *y = top + dist;
+    return;
+  }
+  dist -= height;
+
+  if (dist < width) {
+    *x = right - dist;
+    *y = bottom;
+    return;
+  }
+  dist -= width;
+
+  *x = left;
+  *y = bottom - dist;
+}
+
+static void draw_idle_glow_pixel(int x, int y, uint8_t strength) {
+  if (x < 0 || x >= 960 || y < 0 || y >= 320) return;
+
+  uint16_t inner = lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER, strength);
+  gfx->drawPixel(x, y, inner);
+
+  uint16_t mid = lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER, (uint8_t)(strength * 3 / 5));
+  if (x > 0) gfx->drawPixel(x - 1, y, mid);
+  if (x < 959) gfx->drawPixel(x + 1, y, mid);
+  if (y > 0) gfx->drawPixel(x, y - 1, mid);
+  if (y < 319) gfx->drawPixel(x, y + 1, mid);
+
+  uint16_t outer = lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER_SOFT, strength / 2);
+  if (x > 1) gfx->drawPixel(x - 2, y, outer);
+  if (x < 958) gfx->drawPixel(x + 2, y, outer);
+  if (y > 1) gfx->drawPixel(x, y - 2, outer);
+  if (y < 318) gfx->drawPixel(x, y + 2, outer);
+
+  uint16_t far = lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER_SOFT, strength / 4);
+  if (x > 2) gfx->drawPixel(x - 3, y, far);
+  if (x < 957) gfx->drawPixel(x + 3, y, far);
+  if (y > 2) gfx->drawPixel(x, y - 3, far);
+  if (y < 317) gfx->drawPixel(x, y + 3, far);
+}
+
+static void draw_idle_border(uint32_t now) {
+  const int left = 24;
+  const int top = 20;
+  const int right = 960 - 25;
+  const int bottom = 320 - 21;
+
+  gfx->drawRect(left - 3, top - 3, right - left + 7, bottom - top + 7,
+                lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER_SOFT, 36));
+  gfx->drawRect(left - 2, top - 2, right - left + 5, bottom - top + 5,
+                lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER_SOFT, 58));
+  gfx->drawRect(left - 1, top - 1, right - left + 3, bottom - top + 3,
+                lerp565(COLOR_IDLE_BG, COLOR_IDLE_BORDER, 80));
+  gfx->drawRect(left, top, right - left + 1, bottom - top + 1,
+                COLOR_IDLE_BORDER);
+
+  int width = right - left;
+  int height = bottom - top;
+  int perimeter = (width + height) * 2;
+  int lead = (int)((now / 7U) % (uint32_t)perimeter);
+  const int trail = 220;
+
+  for (int i = 0; i < trail; i++) {
+    int x, y;
+    point_on_rect_perimeter(left, top, right, bottom, lead - i, &x, &y);
+    uint8_t strength = (uint8_t)(255 - ((uint32_t)i * 235U) / (uint32_t)trail);
+    draw_idle_glow_pixel(x, y, strength);
+  }
+}
+
+static void clear_idle_border_band() {
+  const int left = 24;
+  const int top = 20;
+  const int right = 960 - 25;
+  const int bottom = 320 - 21;
+  const int band = 7;
+
+  gfx->fillRect(left - band, top - band, right - left + 1 + band * 2, band * 2 + 1, COLOR_IDLE_BG);
+  gfx->fillRect(left - band, bottom - band, right - left + 1 + band * 2, band * 2 + 1, COLOR_IDLE_BG);
+  gfx->fillRect(left - band, top + band, band * 2 + 1, bottom - top - band * 2 + 1, COLOR_IDLE_BG);
+  gfx->fillRect(right - band, top + band, band * 2 + 1, bottom - top - band * 2 + 1, COLOR_IDLE_BG);
+}
 
 // ======================= TIMER STATE =======================
 #define MAX_TIMERS 3
@@ -1766,7 +1881,7 @@ static PanelLayout panel_layout_for(int active_count, int slot) {
     layout.art_box_y = 154;
     layout.art_box_w = 208;
     layout.art_box_h = 136;
-    layout.ring_cx = layout.x + 366;
+    layout.ring_cx = layout.x + 356;
     layout.ring_cy = 164;
     layout.ring_scale = 0.84f;
   } else {
@@ -1944,30 +2059,83 @@ static void draw_timer_panel(const PanelLayout& layout, const Timer& timer, uint
   draw_timer_ring(layout, timer, frac, now);
 }
 
-static void drawNoTimersScreen() {
+static void drawNoTimersScreen(uint32_t now) {
   gfx->fillScreen(COLOR_IDLE_BG);
-  draw_ui_text_centered("No Active Timers", 480, 34, WHITE, 1);
-  draw_ui_text_centered("Say 'Set a timer' to begin", 480, 90, COLOR_IDLE_SUB, 1);
-  draw_ui_text_centered("or connect via Bluetooth", 480, 128, COLOR_IDLE_SUB, 1);
+  draw_idle_border(now);
+  draw_ui_text_centered("No Active Timers", 480, 102, WHITE, 2);
+  draw_ui_text_centered("Say 'Set a timer' to begin", 480, 176, COLOR_IDLE_BORDER, 1);
+}
 
-  const uint8_t previewIds[] = {
-    THEME_BREAK,
-    THEME_HOMEWORK,
-    THEME_BAKING,
-    THEME_EXERCISE
-  };
-  const int centers[] = {156, 364, 572, 780};
+static void redrawNoTimersBorder(uint32_t now) {
+  clear_idle_border_band();
+  draw_idle_border(now);
+  gfx->flush();
+}
 
-  for (int i = 0; i < 4; i++) {
-    TimerTheme preview = theme_from_id(previewIds[i]);
-    draw_theme_illustration(previewIds[i], centers[i] - 28, 236, 58, preview);
-    #if USE_RING
-    ensure_ring_lut(0.38f);
-    int ring_size = ring_size_px(0.38f);
-    draw_ring(0.84f, CAP_LEAD, preview.ring_start, preview.ring_end, preview.ring_empty,
-              centers[i] - ring_size / 2, 186, COLOR_IDLE_BG, 0.38f);
-    #endif
+static void clear_timer_time_region(const PanelLayout& layout, uint16_t bg) {
+  int clear_x;
+  int clear_w;
+  if (layout.time_centered) {
+    clear_x = layout.x + 24;
+    clear_w = layout.w - 48;
+  } else {
+    clear_x = layout.x + 20;
+    int ring_left = layout.ring_cx - ring_size_px(layout.ring_scale) / 2 - 22;
+    clear_w = ring_left - clear_x;
+    int max_w = layout.w - (clear_x - layout.x) - 16;
+    if (clear_w < 140 || clear_w > max_w) clear_w = max_w;
   }
+
+  int clear_y = layout.time_y - 10;
+  int clear_h = (layout.time_scale > 1) ? 72 : 40;
+  if (clear_y < layout.y) clear_y = layout.y;
+  if (clear_x < layout.x) clear_x = layout.x;
+  if (clear_h > layout.h - (clear_y - layout.y)) clear_h = layout.h - (clear_y - layout.y);
+  gfx->fillRect(clear_x, clear_y, clear_w, clear_h, bg);
+}
+
+static int collect_active_timer_indices(int* activeIndices) {
+  int count = 0;
+  for (int i = 0; i < MAX_TIMERS && count < active_timer_count; i++) {
+    if (timers[i].active) {
+      activeIndices[count++] = i;
+    }
+  }
+  return count;
+}
+
+static void redrawTimerDynamicRegions(uint32_t now) {
+  int activeIndices[MAX_TIMERS];
+  int count = collect_active_timer_indices(activeIndices);
+
+  for (int i = 0; i < count; i++) {
+    int idx = activeIndices[i];
+    const Timer& timer = timers[idx];
+    PanelLayout layout = panel_layout_for(active_timer_count, i);
+    TimerTheme theme = resolved_theme_for_timer(timer);
+
+    if (layout.show_art) {
+      gfx->fillRect(layout.art_box_x, layout.art_box_y, layout.art_box_w, layout.art_box_h, theme.bg);
+    }
+    gfx->fillCircle(layout.ring_cx, layout.ring_cy,
+                    ring_size_px(layout.ring_scale) / 2 + 12, theme.bg);
+    draw_panel_backdrop(layout, theme);
+    draw_timer_art(layout, timer, theme);
+
+    clear_timer_time_region(layout, theme.bg);
+    char hhmmss[9];
+    fmt_hhmmss(timer.seconds_left, hhmmss);
+    draw_ui_text_layout(hhmmss, layout.time_anchor_x, layout.time_y,
+                        layout.time_centered, theme.text, layout.time_scale);
+
+    float frac = 0.0f;
+    if (timer.total_seconds > 0) {
+      frac = (float)timer.seconds_left / (float)timer.total_seconds;
+    }
+    draw_timer_ring(layout, timer, frac, now);
+  }
+
+  gfx->flush();
 }
 
 static void renderTimers();  // Forward declaration
@@ -1975,18 +2143,21 @@ static void renderTimers();  // Forward declaration
 // ======================= TIMING STATE =======================
 static uint32_t last_second_ms = 0;
 static uint32_t last_ring_ms = 0;
+static uint32_t last_idle_anim_ms = 0;
 static char last_text[MAX_TIMERS][9] = {"--------", "--------", "--------"};
 static char last_name[MAX_TIMERS][16] = {"", "", ""};
 static bool needs_full_redraw = true;
+static bool needs_visual_redraw = false;
 static bool full_redraw_resets_timebase = true;
 
 static void requestFullRedraw() {
   needs_full_redraw = true;
+  needs_visual_redraw = false;
   full_redraw_resets_timebase = true;
 }
 
 static void requestVisualRedraw() {
-  needs_full_redraw = true;
+  needs_visual_redraw = true;
 }
 
 // ======================= MAIN SETUP =======================
@@ -2095,10 +2266,12 @@ void setup() {
   #endif
 
   // Show initial screen
-  drawNoTimersScreen();
+  drawNoTimersScreen(millis());
+  gfx->flush();
   
   last_second_ms = millis();
   last_ring_ms = millis();
+  last_idle_anim_ms = millis();
   
   Serial.println("[BOOT] Ready!");
   
@@ -2121,18 +2294,13 @@ void setup() {
 // ======================= RENDER TIMERS =======================
 static void renderTimers() {
   if (active_timer_count == 0) {
-    drawNoTimersScreen();
+    drawNoTimersScreen(millis());
+    gfx->flush();
     return;
   }
 
-  // Get active timer indices
   int activeIndices[MAX_TIMERS];
-  int count = 0;
-  for (int i = 0; i < MAX_TIMERS && count < active_timer_count; i++) {
-    if (timers[i].active) {
-      activeIndices[count++] = i;
-    }
-  }
+  int count = collect_active_timer_indices(activeIndices);
   gfx->fillScreen(COLOR_IDLE_BG);
   uint32_t now = millis();
 
@@ -2146,6 +2314,8 @@ static void renderTimers() {
     strcpy(last_text[i], hhmmss);
     strcpy(last_name[i], timers[idx].name);
   }
+
+  gfx->flush();
 }
 
 // ======================= DEMO MODE PROCESSING =======================
@@ -2195,35 +2365,50 @@ void loop() {
     requestVisualRedraw();
   }
   #endif
+
+  const uint32_t IDLE_FRAME_DT = 45;
+  if (active_timer_count == 0 && !needs_full_redraw && now - last_idle_anim_ms >= IDLE_FRAME_DT) {
+    last_idle_anim_ms = now;
+    requestVisualRedraw();
+  }
   
   // Full redraw if needed
   if (needs_full_redraw) {
     bool redraw_resets_timebase = full_redraw_resets_timebase;
     needs_full_redraw = false;
+    needs_visual_redraw = false;
     full_redraw_resets_timebase = false;
     renderTimers();
     if (redraw_resets_timebase) {
       last_second_ms = now;
       last_ring_ms = now;
     }
+  } else if (needs_visual_redraw) {
+    needs_visual_redraw = false;
+    if (active_timer_count == 0) {
+      redrawNoTimersBorder(now);
+    } else {
+      redrawTimerDynamicRegions(now);
+    }
   }
   
   // === Update countdown once per second ===
-  if (now - last_second_ms >= 1000) {
+  bool layout_changed = false;
+  bool any_timer_changed = false;
+  while (now - last_second_ms >= 1000) {
     last_second_ms += 1000;
-    
-    bool any_timer_changed = false;
-    
+    uint32_t tick_now = last_second_ms;
+
     for (int i = 0; i < MAX_TIMERS; i++) {
       if (!timers[i].active) continue;
-      
+
       if (timers[i].ringing) {
-        // Check for auto-shutoff
-        if (now - timers[i].ring_start_ms >= ALARM_DURATION_MS) {
+        // Check for auto-shutoff.
+        if (tick_now - timers[i].ring_start_ms >= ALARM_DURATION_MS) {
           timers[i].ringing = false;
           timers[i].active = false;
           updateActiveCount();
-          requestFullRedraw();
+          layout_changed = true;
           #if USE_SPEAKER
           play_alarm_tone(false);
           #endif
@@ -2231,19 +2416,21 @@ void loop() {
       } else if (timers[i].seconds_left > 0) {
         timers[i].seconds_left--;
         any_timer_changed = true;
-        
-        // Timer finished - start alarm
+
+        // Timer finished - start alarm.
         if (timers[i].seconds_left == 0) {
           timers[i].ringing = true;
-          timers[i].ring_start_ms = now;
+          timers[i].ring_start_ms = tick_now;
           Serial.printf("[TIMER] %s finished! Alarm ringing.\n", timers[i].name);
         }
       }
     }
-    
-    if (any_timer_changed && !needs_full_redraw) {
-      requestFullRedraw();
-    }
+  }
+
+  if (layout_changed) {
+    requestFullRedraw();
+  } else if (any_timer_changed && !needs_full_redraw) {
+    requestVisualRedraw();
   }
   
   // === Update ring animation (~15 FPS) ===
@@ -2277,6 +2464,8 @@ void loop() {
 
         draw_timer_ring(layout, timers[idx], frac, now);
       }
+
+      gfx->flush();
     }
     #endif
   }
