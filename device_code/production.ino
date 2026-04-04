@@ -197,15 +197,15 @@ enum TimerThemeId : uint8_t {
 };
 
 struct TimerTheme {
-  uint16_t bg;
-  uint16_t ring_start;
-  uint16_t ring_end;
-  uint16_t ring_empty;
-  uint16_t text;
-  uint16_t art_primary;
-  uint16_t art_secondary;
-  uint16_t art_tertiary;
-  uint16_t art_shadow;
+  uint16_t bg;            // Main panel background color
+  uint16_t ring_start;    // Ring gradient color at the leading edge
+  uint16_t ring_end;      // Ring gradient color at the trailing edge
+  uint16_t ring_empty;    // Unfilled ring color
+  uint16_t text;          // Title and timer text color
+  uint16_t art_primary;   // Primary illustration/GIF accent fallback
+  uint16_t art_secondary; // Secondary illustration accent
+  uint16_t art_tertiary;  // Tertiary illustration accent
+  uint16_t art_shadow;    // Illustration shadow/depth color
 };
 
 static const uint16_t COLOR_IDLE_BG = hex565(0x181a20);
@@ -221,59 +221,59 @@ static const uint16_t COLOR_TEXT_WHITE = hex565(0xffffff);
 // Each entry controls the panel background plus the ring gradient/empty ring tint.
 static const TimerTheme THEME_STYLES[THEME_COUNT] = {
   {
-    hex565(0x46637f),
-    hex565(0xf2f5f8),
-    hex565(0xb5c4d9),
-    hex565(0x90a1b8),
-    COLOR_TEXT_WHITE,
-    hex565(0xd8e6f2),
-    hex565(0xa7bed3),
-    hex565(0xffffff),
-    hex565(0x33495f)
+    hex565(0x46637f), // bg
+    hex565(0xf2f5f8), // ring_start
+    hex565(0xb5c4d9), // ring_end
+    hex565(0x90a1b8), // ring_empty
+    COLOR_TEXT_WHITE, // text
+    hex565(0xd8e6f2), // art_primary
+    hex565(0xa7bed3), // art_secondary
+    hex565(0xffffff), // art_tertiary
+    hex565(0x33495f)  // art_shadow
   },
   {
-    hex565(0x4f403f),
-    hex565(0xf4f4f4),
-    hex565(0xd2c9c6),
-    hex565(0x9b8d8a),
-    COLOR_TEXT_WHITE,
-    hex565(0xe9e5e2),
-    hex565(0xc8c8cb),
-    hex565(0x6c4320),
-    hex565(0x7d6f6e)
+    hex565(0x4f403f), // bg
+    hex565(0xf4f4f4), // ring_start
+    hex565(0xd2c9c6), // ring_end
+    hex565(0x9b8d8a), // ring_empty
+    COLOR_TEXT_WHITE, // text
+    hex565(0xe9e5e2), // art_primary
+    hex565(0xc8c8cb), // art_secondary
+    hex565(0x6c4320), // art_tertiary
+    hex565(0x7d6f6e)  // art_shadow
   },
   {
-    hex565(0x496786),
-    hex565(0xf2f5f8),
-    hex565(0xafbdd5),
-    hex565(0x7e94b1),
-    COLOR_TEXT_WHITE,
-    hex565(0xdce7f1),
-    hex565(0xb6c9d8),
-    hex565(0xe8f0fa),
-    hex565(0x5b7591)
+    hex565(0x496786), // bg
+    hex565(0xf2f5f8), // ring_start
+    hex565(0xafbdd5), // ring_end
+    hex565(0x7e94b1), // ring_empty
+    COLOR_TEXT_WHITE, // text
+    hex565(0xdce7f1), // art_primary
+    hex565(0xb6c9d8), // art_secondary
+    hex565(0xe8f0fa), // art_tertiary
+    hex565(0x5b7591)  // art_shadow
   },
   {
-    hex565(0x86465b),
-    hex565(0xf6e7eb),
-    hex565(0xf79eb2),
-    hex565(0xb27186),
-    COLOR_TEXT_WHITE,
-    hex565(0xff9274),
-    hex565(0xffd8ad),
-    hex565(0x6ec8c8),
-    hex565(0x6e3a4d)
+    hex565(0x86465b), // bg
+    hex565(0xf6e7eb), // ring_start
+    hex565(0xf79eb2), // ring_end
+    hex565(0xb27186), // ring_empty
+    COLOR_TEXT_WHITE, // text
+    hex565(0xff9274), // art_primary
+    hex565(0xffd8ad), // art_secondary
+    hex565(0x6ec8c8), // art_tertiary
+    hex565(0x6e3a4d)  // art_shadow
   },
   {
-    hex565(0x28656c),
-    hex565(0xebf7f4),
-    hex565(0x63d6c7),
-    hex565(0x5a9998),
-    COLOR_TEXT_WHITE,
-    hex565(0xc5e7df),
-    hex565(0xa6d4cb),
-    hex565(0xe5f7f3),
-    hex565(0x1e4f57)
+    hex565(0x28656c), // bg
+    hex565(0xebf7f4), // ring_start
+    hex565(0x63d6c7), // ring_end
+    hex565(0x5a9998), // ring_empty
+    COLOR_TEXT_WHITE, // text
+    hex565(0xc5e7df), // art_primary
+    hex565(0xa6d4cb), // art_secondary
+    hex565(0xe5f7f3), // art_tertiary
+    hex565(0x1e4f57)  // art_shadow
   }
 };
 
