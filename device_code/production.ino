@@ -89,9 +89,11 @@ struct DemoCommand {
 static DemoCommand demo_command_queue[] = {
   // Start with no timers, then add them one by one
   { 3000,  "CMD:SET,NAME:Baking,DURATION:180", false },     // 3 sec: Create 3-minute "Baking" timer
-  { 8000,  "CMD:SET,NAME:Break,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
+  { 8000,  "CMD:SET,NAME:Exercise,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
+  { 14000,  "CMD:CANCEL,NAME:Exercise", false },      // 8 sec: Create 2-minute "Break" timer
   { 15000, "CMD:ADD,NAME:Baking,DURATION:60", false },      // 15 sec: Add 1 minute to Baking
   { 20000, "CMD:SET,NAME:Homework,DURATION:90", false },    // 20 sec: Create 90-second "Homework" timer (3rd)
+  { 25000,  "CMD:SET,NAME:Break,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
   { 30000, "CMD:MINUS,NAME:Break,DURATION:30", false },     // 30 sec: Subtract 30 sec from Break
   { 45000, "CMD:CANCEL,NAME:Homework", false },             // 45 sec: Cancel Homework timer
   // Timer will ring when it hits 0, then:
@@ -221,7 +223,7 @@ static const uint16_t COLOR_TEXT_WHITE = hex565(0xffffff);
 // Each entry controls the panel background plus the ring gradient/empty ring tint.
 static const TimerTheme THEME_STYLES[THEME_COUNT] = {
   {
-    hex565(0x46637f), // bg
+    hex565(0x0E1F2F), // bg
     hex565(0xf2f5f8), // ring_start
     hex565(0xb5c4d9), // ring_end
     hex565(0x90a1b8), // ring_empty
@@ -232,9 +234,9 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0x33495f)  // art_shadow
   },
   {
-    hex565(0x4f403f), // bg
+    hex565(0x32201B), // bg
     hex565(0xf4f4f4), // ring_start
-    hex565(0xd2c9c6), // ring_end
+    hex565(0xAF8C7F), // ring_end
     hex565(0x9b8d8a), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xe9e5e2), // art_primary
@@ -243,7 +245,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0x7d6f6e)  // art_shadow
   },
   {
-    hex565(0x496786), // bg
+    hex565(0x213342), // bg
     hex565(0xf2f5f8), // ring_start
     hex565(0xafbdd5), // ring_end
     hex565(0x7e94b1), // ring_empty
@@ -254,9 +256,9 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0x5b7591)  // art_shadow
   },
   {
-    hex565(0x86465b), // bg
+    hex565(0x4A1829), // bg
     hex565(0xf6e7eb), // ring_start
-    hex565(0xf79eb2), // ring_end
+    hex565(0xE991A4), // ring_end
     hex565(0xb27186), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xff9274), // art_primary
