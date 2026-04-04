@@ -45,6 +45,13 @@ typedef struct gd_GIF gd_GIF;
   static void *gif_alloc(size_t bytes) { return malloc(bytes); }
 #endif
 
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+
+static const uint16_t COLOR_BLACK = rgb565(0, 0, 0);
+static const uint16_t COLOR_WHITE = rgb565(255, 255, 255);
+
 // ======================= CONFIG =======================
 // Filesystem selection
 #define USE_LITTLEFS 1
@@ -57,7 +64,7 @@ static const uint32_t MIN_FRAME_DELAY_MS = 20;  // clamp for zero/too-fast delay
 // Background behind transparent pixels. Many exported GIFs set their internal
 // "background color index" to a non-black matte (e.g., white/beige), which will
 // show up as a solid background unless we override it here.
-static const uint16_t TRANSPARENT_BG_COLOR = BLACK;
+static const uint16_t TRANSPARENT_BG_COLOR = COLOR_BLACK;
 
 // ======================= DISPLAY CONFIG (from production.ino) =======================
 #define PCLK_HZ         12000000
@@ -621,9 +628,9 @@ static void collectGifs() {
 }
 
 static void drawHeader(const char *title, const char *subtitle = nullptr) {
-  gfx->fillScreen(BLACK);
+  gfx->fillScreen(COLOR_BLACK);
   gfx->setTextWrap(false);
-  gfx->setTextColor(WHITE, BLACK);
+  gfx->setTextColor(COLOR_WHITE, COLOR_BLACK);
   gfx->setTextSize(2);
   gfx->setCursor(12, 12);
   gfx->print(title);
@@ -782,9 +789,9 @@ static bool playGifPath(const char *path) {
   for (int y = 0; y < outH; y++) ymap[y] = (uint16_t)(((uint32_t)y * (uint32_t)inH) / (uint32_t)outH);
 
   // Static header (drawn outside the image region).
-  gfx->fillScreen(BLACK);
+  gfx->fillScreen(COLOR_BLACK);
   gfx->setTextWrap(false);
-  gfx->setTextColor(WHITE);
+  gfx->setTextColor(COLOR_WHITE);
   gfx->setTextSize(2);
   gfx->setCursor(12, 12);
   gfx->print("GIF Tester");
@@ -890,7 +897,7 @@ void setup() {
   expander->pinMode(PCA_TFT_BACKLIGHT, OUTPUT);
   // Keep backlight off briefly so any early panel sync wobble isn't visible.
   expander->digitalWrite(PCA_TFT_BACKLIGHT, LOW);
-  gfx->fillScreen(BLACK);
+  gfx->fillScreen(COLOR_BLACK);
   delay(120);
   expander->digitalWrite(PCA_TFT_BACKLIGHT, HIGH);
   delay(20);

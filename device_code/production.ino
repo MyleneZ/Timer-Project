@@ -597,7 +597,7 @@ static const char *GIF_ASSET_PATHS[THEME_COUNT] = {
   "/assets/dumbell.gif"
 };
 
-static const uint32_t MIN_GIF_FRAME_DELAY_MS = 20;
+static const uint32_t MIN_GIF_FRAME_DELAY_MS = 80;
 
 typedef struct gd_Palette {
   int16_t len;
@@ -643,6 +643,10 @@ struct gd_GIF {
   uint8_t bgindex;
   gd_Table *table;
   bool read_first_frame;
+  int16_t gif_buf_last_idx;
+  int16_t gif_buf_idx;
+  int32_t file_pos;
+  uint8_t gif_buf[1024];
 };
 
 class GifClass {
@@ -654,39 +658,48 @@ public:
     int16_t gct_sz;
     gd_GIF *gif;
 
-    gif_buf_last_idx = GIF_BUF_SIZE;
-    gif_buf_idx = gif_buf_last_idx;
-    file_pos = 0;
-
-    gif_buf_read(fd, sigver, 3);
-    if (memcmp(sigver, "GIF", 3) != 0) return nullptr;
-
-    gif_buf_read(fd, sigver, 3);
-    if (memcmp(sigver, "89a", 3) != 0) return nullptr;
-
-    width = gif_buf_read16(fd);
-    height = gif_buf_read16(fd);
-
-    gif_buf_read(fd, &fdsz, 1);
-    if (!(fdsz & 0x80)) return nullptr;
-
-    depth = ((fdsz >> 4) & 7) + 1;
-    gct_sz = 1 << ((fdsz & 0x07) + 1);
-    gif_buf_read(fd, &bgidx, 1);
-    gif_buf_read(fd, &aspect, 1);
-
     gif = (gd_GIF *)calloc(1, sizeof(*gif));
     if (!gif) return nullptr;
 
     gif->fd = fd;
+    gif->gif_buf_last_idx = GIF_BUF_SIZE;
+    gif->gif_buf_idx = gif->gif_buf_last_idx;
+    gif->file_pos = 0;
+
+    gif_buf_read(gif, sigver, 3);
+    if (memcmp(sigver, "GIF", 3) != 0) {
+      free(gif);
+      return nullptr;
+    }
+
+    gif_buf_read(gif, sigver, 3);
+    if (memcmp(sigver, "89a", 3) != 0 && memcmp(sigver, "87a", 3) != 0) {
+      free(gif);
+      return nullptr;
+    }
+
+    width = gif_buf_read16(gif);
+    height = gif_buf_read16(gif);
+
+    gif_buf_read(gif, &fdsz, 1);
+    if (!(fdsz & 0x80)) {
+      free(gif);
+      return nullptr;
+    }
+
+    depth = ((fdsz >> 4) & 7) + 1;
+    gct_sz = 1 << ((fdsz & 0x07) + 1);
+    gif_buf_read(gif, &bgidx, 1);
+    gif_buf_read(gif, &aspect, 1);
+
     gif->width = width;
     gif->height = height;
     gif->depth = depth;
 
-    read_palette(fd, &gif->gct, gct_sz);
+    read_palette(gif, &gif->gct, gct_sz);
     gif->palette = &gif->gct;
     gif->bgindex = bgidx;
-    gif->anim_start = file_pos;
+    gif->anim_start = gif->file_pos;
 
     gif->table = new_table();
     gif->read_first_frame = false;
@@ -702,8 +715,8 @@ public:
     gif->gce = {};
 
     while (1) {
-      gif_buf_read(gif->fd, (uint8_t *)&sep, 1);
-      if (sep == 0) gif_buf_read(gif->fd, (uint8_t *)&sep, 1);
+      gif_buf_read(gif, (uint8_t *)&sep, 1);
+      if (sep == 0) gif_buf_read(gif, (uint8_t *)&sep, 1);
       if (sep == ',') break;
       if (sep == ';') return 0;
       if (sep == '!') {
@@ -719,8 +732,8 @@ public:
 
   void gd_rewind(gd_GIF *gif) {
     gif->fd->seek(gif->anim_start, SeekSet);
-    file_pos = gif->anim_start;
-    gif_buf_idx = gif_buf_last_idx;
+    gif->file_pos = gif->anim_start;
+    gif->gif_buf_idx = gif->gif_buf_last_idx;
   }
 
   void gd_close_gif(gd_GIF *gif) {
@@ -733,49 +746,49 @@ public:
 private:
   static const int GIF_BUF_SIZE = 1024;
 
-  bool gif_buf_seek(File *fd, int16_t len) {
-    if (len > (gif_buf_last_idx - gif_buf_idx)) {
-      fd->seek(file_pos + len - (gif_buf_last_idx - gif_buf_idx), SeekSet);
-      gif_buf_idx = gif_buf_last_idx;
+  bool gif_buf_seek(gd_GIF *gif, int16_t len) {
+    if (len > (gif->gif_buf_last_idx - gif->gif_buf_idx)) {
+      gif->fd->seek(gif->file_pos + len - (gif->gif_buf_last_idx - gif->gif_buf_idx), SeekSet);
+      gif->gif_buf_idx = gif->gif_buf_last_idx;
     } else {
-      gif_buf_idx += len;
+      gif->gif_buf_idx += len;
     }
-    file_pos += len;
+    gif->file_pos += len;
     return true;
   }
 
-  int16_t gif_buf_read(File *fd, uint8_t *dest, int16_t len) {
+  int16_t gif_buf_read(gd_GIF *gif, uint8_t *dest, int16_t len) {
     while (len--) {
-      if (gif_buf_idx == gif_buf_last_idx) {
-        gif_buf_last_idx = fd->read(gif_buf, GIF_BUF_SIZE);
-        gif_buf_idx = 0;
+      if (gif->gif_buf_idx == gif->gif_buf_last_idx) {
+        gif->gif_buf_last_idx = gif->fd->read(gif->gif_buf, GIF_BUF_SIZE);
+        gif->gif_buf_idx = 0;
       }
-      file_pos++;
-      *(dest++) = gif_buf[gif_buf_idx++];
+      gif->file_pos++;
+      *(dest++) = gif->gif_buf[gif->gif_buf_idx++];
     }
     return len;
   }
 
-  uint8_t gif_buf_read(File *fd) {
-    if (gif_buf_idx == gif_buf_last_idx) {
-      gif_buf_last_idx = fd->read(gif_buf, GIF_BUF_SIZE);
-      gif_buf_idx = 0;
+  uint8_t gif_buf_read(gd_GIF *gif) {
+    if (gif->gif_buf_idx == gif->gif_buf_last_idx) {
+      gif->gif_buf_last_idx = gif->fd->read(gif->gif_buf, GIF_BUF_SIZE);
+      gif->gif_buf_idx = 0;
     }
-    file_pos++;
-    return gif_buf[gif_buf_idx++];
+    gif->file_pos++;
+    return gif->gif_buf[gif->gif_buf_idx++];
   }
 
-  uint16_t gif_buf_read16(File *fd) {
-    return gif_buf_read(fd) + (((uint16_t)gif_buf_read(fd)) << 8);
+  uint16_t gif_buf_read16(gd_GIF *gif) {
+    return gif_buf_read(gif) + (((uint16_t)gif_buf_read(gif)) << 8);
   }
 
-  void read_palette(File *fd, gd_Palette *dest, int16_t num_colors) {
+  void read_palette(gd_GIF *gif, gd_Palette *dest, int16_t num_colors) {
     uint8_t r, g, b;
     dest->len = num_colors;
     for (int16_t i = 0; i < num_colors; i++) {
-      r = gif_buf_read(fd);
-      g = gif_buf_read(fd);
-      b = gif_buf_read(fd);
+      r = gif_buf_read(gif);
+      g = gif_buf_read(gif);
+      b = gif_buf_read(gif);
       dest->colors[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3);
     }
   }
@@ -783,8 +796,8 @@ private:
   void discard_sub_blocks(gd_GIF *gif) {
     uint8_t len;
     do {
-      gif_buf_read(gif->fd, &len, 1);
-      gif_buf_seek(gif->fd, len);
+      gif_buf_read(gif, &len, 1);
+      gif_buf_seek(gif, len);
     } while (len);
   }
 
@@ -792,32 +805,32 @@ private:
     if (gif->plain_text) {
       uint16_t tx, ty, tw, th;
       uint8_t cw, ch, fg, bg;
-      gif_buf_seek(gif->fd, 1);
-      tx = gif_buf_read16(gif->fd);
-      ty = gif_buf_read16(gif->fd);
-      tw = gif_buf_read16(gif->fd);
-      th = gif_buf_read16(gif->fd);
-      cw = gif_buf_read(gif->fd);
-      ch = gif_buf_read(gif->fd);
-      fg = gif_buf_read(gif->fd);
-      bg = gif_buf_read(gif->fd);
+      gif_buf_seek(gif, 1);
+      tx = gif_buf_read16(gif);
+      ty = gif_buf_read16(gif);
+      tw = gif_buf_read16(gif);
+      th = gif_buf_read16(gif);
+      cw = gif_buf_read(gif);
+      ch = gif_buf_read(gif);
+      fg = gif_buf_read(gif);
+      bg = gif_buf_read(gif);
       gif->plain_text(gif, tx, ty, tw, th, cw, ch, fg, bg);
     } else {
-      gif_buf_seek(gif->fd, 13);
+      gif_buf_seek(gif, 13);
     }
     discard_sub_blocks(gif);
   }
 
   void read_graphic_control_ext(gd_GIF *gif) {
     uint8_t rdit;
-    gif_buf_seek(gif->fd, 1);
-    gif_buf_read(gif->fd, &rdit, 1);
+    gif_buf_seek(gif, 1);
+    gif_buf_read(gif, &rdit, 1);
     gif->gce.disposal = (rdit >> 2) & 7;
     gif->gce.input = rdit & 2;
     gif->gce.transparency = rdit & 1;
-    gif->gce.delay = gif_buf_read16(gif->fd);
-    gif_buf_read(gif->fd, &gif->gce.tindex, 1);
-    gif_buf_seek(gif->fd, 1);
+    gif->gce.delay = gif_buf_read16(gif);
+    gif_buf_read(gif, &gif->gce.tindex, 1);
+    gif_buf_seek(gif, 1);
   }
 
   void read_comment_ext(gd_GIF *gif) {
@@ -829,14 +842,14 @@ private:
     char app_id[8];
     char app_auth_code[3];
 
-    gif_buf_seek(gif->fd, 1);
-    gif_buf_read(gif->fd, (uint8_t *)app_id, 8);
-    gif_buf_read(gif->fd, (uint8_t *)app_auth_code, 3);
+    gif_buf_seek(gif, 1);
+    gif_buf_read(gif, (uint8_t *)app_id, 8);
+    gif_buf_read(gif, (uint8_t *)app_auth_code, 3);
 
     if (!strncmp(app_id, "NETSCAPE", sizeof(app_id))) {
-      gif_buf_seek(gif->fd, 2);
-      gif->loop_count = gif_buf_read16(gif->fd);
-      gif_buf_seek(gif->fd, 1);
+      gif_buf_seek(gif, 2);
+      gif->loop_count = gif_buf_read16(gif);
+      gif_buf_seek(gif, 1);
     } else if (gif->application) {
       gif->application(gif, app_id, app_auth_code);
       discard_sub_blocks(gif);
@@ -847,7 +860,7 @@ private:
 
   void read_ext(gd_GIF *gif) {
     uint8_t label;
-    gif_buf_read(gif->fd, &label, 1);
+    gif_buf_read(gif, &label, 1);
     switch (label) {
       case 0x01: read_plain_text_ext(gif); break;
       case 0xF9: read_graphic_control_ext(gif); break;
@@ -890,8 +903,8 @@ private:
     for (bits_read = 0; bits_read < (int16_t)key_size; bits_read += frag_size) {
       rpad = (*shift + bits_read) % 8;
       if (rpad == 0) {
-        if (*sub_len == 0) gif_buf_read(gif->fd, sub_len, 1);
-        gif_buf_read(gif->fd, byte, 1);
+        if (*sub_len == 0) gif_buf_read(gif, sub_len, 1);
+        gif_buf_read(gif, byte, 1);
         (*sub_len)--;
       }
       frag_size = MIN((int16_t)key_size - bits_read, (int16_t)8 - rpad);
@@ -924,7 +937,7 @@ private:
     int32_t ret;
     gd_Entry entry = {0, 0, 0};
 
-    gif_buf_read(gif->fd, &byte, 1);
+    gif_buf_read(gif, &byte, 1);
     key_size = (uint16_t)byte;
     clear = 1 << key_size;
     stop = clear + 1;
@@ -978,7 +991,7 @@ private:
       }
     }
 
-    gif_buf_read(gif->fd, &sub_len, 1);
+    gif_buf_read(gif, &sub_len, 1);
     gif->read_first_frame = true;
     return 0;
   }
@@ -987,15 +1000,15 @@ private:
     uint8_t fisrz;
     int16_t interlace;
 
-    gif->fx = gif_buf_read16(gif->fd);
-    gif->fy = gif_buf_read16(gif->fd);
-    gif->fw = gif_buf_read16(gif->fd);
-    gif->fh = gif_buf_read16(gif->fd);
-    gif_buf_read(gif->fd, &fisrz, 1);
+    gif->fx = gif_buf_read16(gif);
+    gif->fy = gif_buf_read16(gif);
+    gif->fw = gif_buf_read16(gif);
+    gif->fh = gif_buf_read16(gif);
+    gif_buf_read(gif, &fisrz, 1);
 
     interlace = fisrz & 0x40;
     if (fisrz & 0x80) {
-      read_palette(gif->fd, &gif->lct, 1 << ((fisrz & 0x07) + 1));
+      read_palette(gif, &gif->lct, 1 << ((fisrz & 0x07) + 1));
       gif->palette = &gif->lct;
     } else {
       gif->palette = &gif->gct;
@@ -1003,10 +1016,6 @@ private:
 
     return read_image_data(gif, interlace, frame);
   }
-
-  int16_t gif_buf_last_idx, gif_buf_idx;
-  int32_t file_pos;
-  uint8_t gif_buf[GIF_BUF_SIZE];
 };
 
 struct ThemeGifState {
@@ -1058,6 +1067,32 @@ static const char *fsName() {
 #else
   return "SPIFFS";
 #endif
+}
+
+static void log_gif_filesystem_status() {
+  if (!g_gif_fs_ready) return;
+
+  Serial.println("[GIF] Filesystem asset check:");
+  for (uint8_t theme_id = 0; theme_id < THEME_COUNT; theme_id++) {
+    const char *path = GIF_ASSET_PATHS[theme_id];
+    if (!path) continue;
+
+    bool exists = gifFS().exists(path);
+    if (!exists) {
+      Serial.printf("[GIF]   missing: %s\n", path);
+      continue;
+    }
+
+    File f = gifFS().open(path, "r");
+    if (!f || f.isDirectory()) {
+      Serial.printf("[GIF]   present but could not open: %s\n", path);
+      if (f) f.close();
+      continue;
+    }
+
+    Serial.printf("[GIF]   found: %s (%lu bytes)\n", path, (unsigned long)f.size());
+    f.close();
+  }
 }
 
 static void fill_canvas(uint16_t *canvas, size_t pixels, uint16_t color) {
@@ -1363,23 +1398,20 @@ static bool sync_theme_gifs(uint32_t now) {
   bool any_changed = false;
   bool needed[THEME_COUNT] = {false};
   bool theme_due[THEME_COUNT] = {false};
-  uint8_t chosen_theme_id = THEME_COUNT;
 
   for (int i = 0; i < MAX_TIMERS; i++) {
     if (!timers[i].active) continue;
     if (timers[i].theme_id < THEME_COUNT && GIF_ASSET_PATHS[timers[i].theme_id]) {
-      chosen_theme_id = timers[i].theme_id;
-      break;
-    }
-  }
+      uint8_t theme_id = timers[i].theme_id;
+      needed[theme_id] = true;
+      TimerTheme theme = theme_from_id(theme_id);
+      if (!init_theme_gif(theme_id, theme.bg)) continue;
 
-  if (chosen_theme_id < THEME_COUNT) {
-    needed[chosen_theme_id] = true;
-    TimerTheme theme = theme_from_id(chosen_theme_id);
-    if (init_theme_gif(chosen_theme_id, theme.bg)) {
-      ThemeGifState &state = g_theme_gifs[chosen_theme_id];
+      ThemeGifState &state = g_theme_gifs[theme_id];
+      // The reduced uploaded assets are small enough that multiple themes can
+      // stay decoded in memory at the same time again.
       if (!state.has_frame || (int32_t)(now - state.next_frame_ms) >= 0) {
-        theme_due[chosen_theme_id] = true;
+        theme_due[theme_id] = true;
       }
     }
   }
@@ -2171,9 +2203,20 @@ static void redrawTimerArtRegions() {
     if (!redraw_this) continue;
 
     if (layout.show_art) {
-      gfx->fillRect(layout.art_box_x, layout.art_box_y, layout.art_box_w, layout.art_box_h, theme.bg);
-      draw_panel_art_accents(layout, theme);
-      draw_timer_art(layout, timer, theme);
+      bool drew_gif = false;
+      #if USE_GIFS
+      drew_gif = draw_theme_gif(timer.theme_id,
+                                layout.art_box_x,
+                                layout.art_box_y,
+                                layout.art_box_w,
+                                layout.art_box_h);
+      #endif
+
+      if (!drew_gif) {
+        gfx->fillRect(layout.art_box_x, layout.art_box_y, layout.art_box_w, layout.art_box_h, theme.bg);
+        draw_panel_art_accents(layout, theme);
+        draw_timer_art(layout, timer, theme);
+      }
     }
   }
 }
