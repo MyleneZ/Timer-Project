@@ -1923,7 +1923,7 @@ static PanelLayout panel_layout_for(int active_count, int slot) {
     layout.art_box_h = 180;
     layout.ring_cx = 536;
     layout.ring_cy = 165;
-    layout.ring_scale = 0.98f;
+    layout.ring_scale = 1.00f;
   } else if (active_count == 2) {
     layout.x = slot * 480;
     layout.w = 480;
@@ -1942,7 +1942,7 @@ static PanelLayout panel_layout_for(int active_count, int slot) {
     layout.art_box_h = 136;
     layout.ring_cx = layout.x + 356;
     layout.ring_cy = 164;
-    layout.ring_scale = 0.84f;
+    layout.ring_scale = 0.86f;
   } else {
     layout.x = slot * 320;
     layout.w = 320;
@@ -2078,6 +2078,7 @@ static void draw_timer_art(const PanelLayout& layout, const Timer& timer, const 
 
 static void draw_panel_art_accents(const PanelLayout& layout, const TimerTheme& theme) {
   if (!layout.show_art) return;
+  if (layout.w <= 480) return;
   gfx->fillCircle(layout.art_box_x + layout.art_box_w - 26,
                   layout.art_box_y + 20,
                   7,
@@ -2089,8 +2090,9 @@ static void draw_panel_art_accents(const PanelLayout& layout, const TimerTheme& 
 }
 
 static void draw_panel_backdrop(const PanelLayout& layout, const TimerTheme& theme) {
+  int halo_extra = (layout.w >= 900) ? 4 : 2;
   gfx->fillCircle(layout.ring_cx, layout.ring_cy,
-                  ring_size_px(layout.ring_scale) / 2 + 10,
+                  ring_size_px(layout.ring_scale) / 2 + halo_extra,
                   lerp565(theme.bg, theme.ring_empty, 72));
   draw_panel_art_accents(layout, theme);
 }
