@@ -47,7 +47,7 @@ struct PanelLayout;
 // ======================= FEATURE FLAGS =======================
 #define USE_MIC       0   // Disable local mic (using Nicla Voice instead)
 #define USE_RING      1   // Enable ring animation
-#define USE_GIFS      1   // Enable animated activity art from LittleFS/SPIFFS
+#define USE_GIFS      0   // Disable GIF blits for stability on the RGB panel
 #define USE_SPEAKER   1   // Enable speaker output
 #define USE_BLE       1   // Enable BLE for Nicla Voice communication
 
@@ -164,7 +164,7 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
 );
 
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
-  320, 960, rgbpanel, 0, false,
+  320, 960, rgbpanel, 0, true,
   expander, GFX_NOT_DEFINED,
   HD458002C40_init_operations, sizeof(HD458002C40_init_operations),
   80
@@ -214,6 +214,7 @@ static const uint16_t COLOR_IDLE_BORDER_SOFT = hex565(0xc7d1e2);
 static const uint16_t COLOR_ALERT_RED = hex565(0xff738d);
 static const uint16_t COLOR_ALERT_ORANGE = hex565(0xff9c5a);
 static const uint16_t COLOR_ALERT_START = hex565(0xffeef2);
+static const uint16_t COLOR_TEXT_WHITE = hex565(0xffffff);
 
 // Edit activity colors here.
 // Each entry controls the panel background plus the ring gradient/empty ring tint.
@@ -223,7 +224,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0xf2f5f8),
     hex565(0xb5c4d9),
     hex565(0x90a1b8),
-    WHITE,
+    COLOR_TEXT_WHITE,
     hex565(0xd8e6f2),
     hex565(0xa7bed3),
     hex565(0xffffff),
@@ -234,7 +235,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0xf4f4f4),
     hex565(0xd2c9c6),
     hex565(0x9b8d8a),
-    WHITE,
+    COLOR_TEXT_WHITE,
     hex565(0xe9e5e2),
     hex565(0xc8c8cb),
     hex565(0x6c4320),
@@ -245,7 +246,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0xf2f5f8),
     hex565(0xafbdd5),
     hex565(0x7e94b1),
-    WHITE,
+    COLOR_TEXT_WHITE,
     hex565(0xdce7f1),
     hex565(0xb6c9d8),
     hex565(0xe8f0fa),
@@ -256,7 +257,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0xf6e7eb),
     hex565(0xf79eb2),
     hex565(0xb27186),
-    WHITE,
+    COLOR_TEXT_WHITE,
     hex565(0xff9274),
     hex565(0xffd8ad),
     hex565(0x6ec8c8),
@@ -267,7 +268,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0xebf7f4),
     hex565(0x63d6c7),
     hex565(0x5a9998),
-    WHITE,
+    COLOR_TEXT_WHITE,
     hex565(0xc5e7df),
     hex565(0xa6d4cb),
     hex565(0xe5f7f3),
@@ -1849,22 +1850,22 @@ static PanelLayout panel_layout_for(int active_count, int slot) {
   if (active_count == 1) {
     layout.x = 0;
     layout.w = 960;
-    layout.title_anchor_x = 52;
-    layout.title_y = 34;
+    layout.title_anchor_x = 54;
+    layout.title_y = 58;
     layout.title_scale = 1;
     layout.title_centered = false;
-    layout.time_anchor_x = 52;
-    layout.time_y = 84;
+    layout.time_anchor_x = 54;
+    layout.time_y = 126;
     layout.time_scale = 2;
     layout.time_centered = false;
     layout.show_art = true;
-    layout.art_box_x = 30;
-    layout.art_box_y = 146;
-    layout.art_box_w = 280;
-    layout.art_box_h = 144;
-    layout.ring_cx = 732;
-    layout.ring_cy = 160;
-    layout.ring_scale = 0.99f;
+    layout.art_box_x = 710;
+    layout.art_box_y = 110;
+    layout.art_box_w = 210;
+    layout.art_box_h = 180;
+    layout.ring_cx = 536;
+    layout.ring_cy = 165;
+    layout.ring_scale = 0.98f;
   } else if (active_count == 2) {
     layout.x = slot * 480;
     layout.w = 480;
@@ -1999,20 +2000,23 @@ static void draw_timer_art(const PanelLayout& layout, const Timer& timer, const 
                           theme);
 }
 
+static void draw_panel_art_accents(const PanelLayout& layout, const TimerTheme& theme) {
+  if (!layout.show_art) return;
+  gfx->fillCircle(layout.art_box_x + layout.art_box_w - 26,
+                  layout.art_box_y + 20,
+                  7,
+                  lerp565(theme.ring_start, theme.art_primary, 110));
+  gfx->fillCircle(layout.art_box_x + layout.art_box_w - 48,
+                  layout.art_box_y + 44,
+                  4,
+                  lerp565(theme.ring_start, theme.art_secondary, 100));
+}
+
 static void draw_panel_backdrop(const PanelLayout& layout, const TimerTheme& theme) {
   gfx->fillCircle(layout.ring_cx, layout.ring_cy,
                   ring_size_px(layout.ring_scale) / 2 + 10,
                   lerp565(theme.bg, theme.ring_empty, 72));
-  if (layout.show_art) {
-    gfx->fillCircle(layout.art_box_x + layout.art_box_w - 26,
-                    layout.art_box_y + 20,
-                    7,
-                    lerp565(theme.ring_start, theme.art_primary, 110));
-    gfx->fillCircle(layout.art_box_x + layout.art_box_w - 48,
-                    layout.art_box_y + 44,
-                    4,
-                    lerp565(theme.ring_start, theme.art_secondary, 100));
-  }
+  draw_panel_art_accents(layout, theme);
 }
 
 static void draw_timer_ring(const PanelLayout& layout, const Timer& timer, float frac, uint32_t now) {
@@ -2062,14 +2066,13 @@ static void draw_timer_panel(const PanelLayout& layout, const Timer& timer, uint
 static void drawNoTimersScreen(uint32_t now) {
   gfx->fillScreen(COLOR_IDLE_BG);
   draw_idle_border(now);
-  draw_ui_text_centered("No Active Timers", 480, 102, WHITE, 2);
+  draw_ui_text_centered("No Active Timers", 480, 102, COLOR_TEXT_WHITE, 2);
   draw_ui_text_centered("Say 'Set a timer' to begin", 480, 176, COLOR_IDLE_BORDER, 1);
 }
 
 static void redrawNoTimersBorder(uint32_t now) {
   clear_idle_border_band();
   draw_idle_border(now);
-  gfx->flush();
 }
 
 static void clear_timer_time_region(const PanelLayout& layout, uint16_t bg) {
@@ -2104,7 +2107,7 @@ static int collect_active_timer_indices(int* activeIndices) {
   return count;
 }
 
-static void redrawTimerDynamicRegions(uint32_t now) {
+static void redrawTimerArtRegions() {
   int activeIndices[MAX_TIMERS];
   int count = collect_active_timer_indices(activeIndices);
 
@@ -2116,26 +2119,28 @@ static void redrawTimerDynamicRegions(uint32_t now) {
 
     if (layout.show_art) {
       gfx->fillRect(layout.art_box_x, layout.art_box_y, layout.art_box_w, layout.art_box_h, theme.bg);
+      draw_panel_art_accents(layout, theme);
+      draw_timer_art(layout, timer, theme);
     }
-    gfx->fillCircle(layout.ring_cx, layout.ring_cy,
-                    ring_size_px(layout.ring_scale) / 2 + 12, theme.bg);
-    draw_panel_backdrop(layout, theme);
-    draw_timer_art(layout, timer, theme);
+  }
+}
+
+static void redrawTimerTimeRegions() {
+  int activeIndices[MAX_TIMERS];
+  int count = collect_active_timer_indices(activeIndices);
+
+  for (int i = 0; i < count; i++) {
+    int idx = activeIndices[i];
+    const Timer& timer = timers[idx];
+    PanelLayout layout = panel_layout_for(active_timer_count, i);
+    TimerTheme theme = resolved_theme_for_timer(timer);
 
     clear_timer_time_region(layout, theme.bg);
     char hhmmss[9];
     fmt_hhmmss(timer.seconds_left, hhmmss);
     draw_ui_text_layout(hhmmss, layout.time_anchor_x, layout.time_y,
                         layout.time_centered, theme.text, layout.time_scale);
-
-    float frac = 0.0f;
-    if (timer.total_seconds > 0) {
-      frac = (float)timer.seconds_left / (float)timer.total_seconds;
-    }
-    draw_timer_ring(layout, timer, frac, now);
   }
-
-  gfx->flush();
 }
 
 static void renderTimers();  // Forward declaration
@@ -2148,16 +2153,28 @@ static char last_text[MAX_TIMERS][9] = {"--------", "--------", "--------"};
 static char last_name[MAX_TIMERS][16] = {"", "", ""};
 static bool needs_full_redraw = true;
 static bool needs_visual_redraw = false;
+static bool needs_time_redraw = false;
+static bool needs_art_redraw = false;
 static bool full_redraw_resets_timebase = true;
 
 static void requestFullRedraw() {
   needs_full_redraw = true;
   needs_visual_redraw = false;
+  needs_time_redraw = false;
+  needs_art_redraw = false;
   full_redraw_resets_timebase = true;
 }
 
 static void requestVisualRedraw() {
   needs_visual_redraw = true;
+}
+
+static void requestTimeRedraw() {
+  needs_time_redraw = true;
+}
+
+static void requestArtRedraw() {
+  needs_art_redraw = true;
 }
 
 // ======================= MAIN SETUP =======================
@@ -2295,7 +2312,6 @@ void setup() {
 static void renderTimers() {
   if (active_timer_count == 0) {
     drawNoTimersScreen(millis());
-    gfx->flush();
     return;
   }
 
@@ -2314,8 +2330,6 @@ static void renderTimers() {
     strcpy(last_text[i], hhmmss);
     strcpy(last_name[i], timers[idx].name);
   }
-
-  gfx->flush();
 }
 
 // ======================= DEMO MODE PROCESSING =======================
@@ -2345,6 +2359,7 @@ static void processDemoCommands() {
 // ======================= MAIN LOOP =======================
 void loop() {
   uint32_t now = millis();
+  bool frame_dirty = false;
   
   #if USE_SPEAKER
   sfx_loop();  // Keep MP3 decoder running
@@ -2362,11 +2377,11 @@ void loop() {
 
   #if USE_GIFS
   if (sync_theme_gifs(now)) {
-    requestVisualRedraw();
+    requestArtRedraw();
   }
   #endif
 
-  const uint32_t IDLE_FRAME_DT = 45;
+  const uint32_t IDLE_FRAME_DT = 80;
   if (active_timer_count == 0 && !needs_full_redraw && now - last_idle_anim_ms >= IDLE_FRAME_DT) {
     last_idle_anim_ms = now;
     requestVisualRedraw();
@@ -2377,18 +2392,38 @@ void loop() {
     bool redraw_resets_timebase = full_redraw_resets_timebase;
     needs_full_redraw = false;
     needs_visual_redraw = false;
+    needs_time_redraw = false;
+    needs_art_redraw = false;
     full_redraw_resets_timebase = false;
     renderTimers();
+    frame_dirty = true;
     if (redraw_resets_timebase) {
       last_second_ms = now;
       last_ring_ms = now;
     }
-  } else if (needs_visual_redraw) {
-    needs_visual_redraw = false;
-    if (active_timer_count == 0) {
-      redrawNoTimersBorder(now);
+  } else {
+    if (needs_visual_redraw) {
+      needs_visual_redraw = false;
+      if (active_timer_count == 0) {
+        redrawNoTimersBorder(now);
+        frame_dirty = true;
+      }
+    }
+
+    if (active_timer_count > 0) {
+      if (needs_art_redraw) {
+        needs_art_redraw = false;
+        redrawTimerArtRegions();
+        frame_dirty = true;
+      }
+      if (needs_time_redraw) {
+        needs_time_redraw = false;
+        redrawTimerTimeRegions();
+        frame_dirty = true;
+      }
     } else {
-      redrawTimerDynamicRegions(now);
+      needs_art_redraw = false;
+      needs_time_redraw = false;
     }
   }
   
@@ -2430,7 +2465,7 @@ void loop() {
   if (layout_changed) {
     requestFullRedraw();
   } else if (any_timer_changed && !needs_full_redraw) {
-    requestVisualRedraw();
+    requestTimeRedraw();
   }
   
   // === Update ring animation (~15 FPS) ===
@@ -2464,10 +2499,13 @@ void loop() {
 
         draw_timer_ring(layout, timers[idx], frac, now);
       }
-
-      gfx->flush();
+      frame_dirty = true;
     }
     #endif
+  }
+
+  if (frame_dirty) {
+    gfx->flush();
   }
   
   // === Handle alarm sounds ===
