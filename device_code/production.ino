@@ -1041,6 +1041,8 @@ static uint16_t *g_gif_ymap = nullptr;
 static size_t g_gif_draw_pixels = 0;
 static size_t g_gif_xmap_len = 0;
 static size_t g_gif_ymap_len = 0;
+static uint32_t g_gif_dirty_theme_mask = 0;
+static uint8_t g_gif_round_robin_theme = 0;
 
 static FS &gifFS() {
 #if USE_LITTLEFS
@@ -1352,7 +1354,7 @@ static bool draw_theme_gif(uint8_t theme_id, int box_x, int box_y, int box_w, in
   int draw_y = box_y + (box_h - outH) / 2;
 
   gfx->startWrite();
-  gfx->draw16bitRGBBitmap(draw_x, draw_y, g_gif_draw_buf, outW, outH);
+  gfx->draw16bitRGBBitmap(draw_x - BITMAP_X_ALIGN_FIX, draw_y, g_gif_draw_buf, outW, outH);
   gfx->endWrite();
   return true;
 }
@@ -1360,14 +1362,37 @@ static bool draw_theme_gif(uint8_t theme_id, int box_x, int box_y, int box_w, in
 static bool sync_theme_gifs(uint32_t now) {
   bool any_changed = false;
   bool needed[THEME_COUNT] = {false};
+  bool theme_due[THEME_COUNT] = {false};
+  uint8_t chosen_theme_id = THEME_COUNT;
 
   for (int i = 0; i < MAX_TIMERS; i++) {
     if (!timers[i].active) continue;
     if (timers[i].theme_id < THEME_COUNT && GIF_ASSET_PATHS[timers[i].theme_id]) {
-      needed[timers[i].theme_id] = true;
-      TimerTheme theme = theme_from_id(timers[i].theme_id);
-      if (prepare_theme_gif(timers[i].theme_id, theme.bg, now)) any_changed = true;
+      chosen_theme_id = timers[i].theme_id;
+      break;
     }
+  }
+
+  if (chosen_theme_id < THEME_COUNT) {
+    needed[chosen_theme_id] = true;
+    TimerTheme theme = theme_from_id(chosen_theme_id);
+    if (init_theme_gif(chosen_theme_id, theme.bg)) {
+      ThemeGifState &state = g_theme_gifs[chosen_theme_id];
+      if (!state.has_frame || (int32_t)(now - state.next_frame_ms) >= 0) {
+        theme_due[chosen_theme_id] = true;
+      }
+    }
+  }
+
+  for (uint8_t offset = 0; offset < THEME_COUNT; offset++) {
+    uint8_t theme_id = (uint8_t)((g_gif_round_robin_theme + offset) % THEME_COUNT);
+    if (!theme_due[theme_id]) continue;
+    if (advance_theme_gif(theme_id, now)) {
+      any_changed = true;
+      if (theme_id < 32) g_gif_dirty_theme_mask |= (1UL << theme_id);
+    }
+    g_gif_round_robin_theme = (uint8_t)((theme_id + 1) % THEME_COUNT);
+    break;
   }
 
   for (uint8_t theme_id = 0; theme_id < THEME_COUNT; theme_id++) {
@@ -2135,6 +2160,15 @@ static void redrawTimerArtRegions() {
     const Timer& timer = timers[idx];
     PanelLayout layout = panel_layout_for(active_timer_count, i);
     TimerTheme theme = resolved_theme_for_timer(timer);
+    bool redraw_this = (g_gif_dirty_theme_mask == 0);
+
+    #if USE_GIFS
+    if (!redraw_this && timer.theme_id < 32) {
+      redraw_this = ((g_gif_dirty_theme_mask >> timer.theme_id) & 0x1U) != 0;
+    }
+    #endif
+
+    if (!redraw_this) continue;
 
     if (layout.show_art) {
       gfx->fillRect(layout.art_box_x, layout.art_box_y, layout.art_box_w, layout.art_box_h, theme.bg);
@@ -2378,7 +2412,6 @@ static void processDemoCommands() {
 // ======================= MAIN LOOP =======================
 void loop() {
   uint32_t now = millis();
-  bool frame_dirty = false;
   
   #if USE_SPEAKER
   sfx_loop();  // Keep MP3 decoder running
@@ -2415,7 +2448,6 @@ void loop() {
     needs_art_redraw = false;
     full_redraw_resets_timebase = false;
     renderTimers();
-    frame_dirty = true;
     if (redraw_resets_timebase) {
       last_second_ms = now;
       last_ring_ms = now;
@@ -2425,7 +2457,6 @@ void loop() {
       needs_visual_redraw = false;
       if (active_timer_count == 0) {
         redrawNoTimersBorder(now);
-        frame_dirty = true;
       }
     }
 
@@ -2433,12 +2464,11 @@ void loop() {
       if (needs_art_redraw) {
         needs_art_redraw = false;
         redrawTimerArtRegions();
-        frame_dirty = true;
+        g_gif_dirty_theme_mask = 0;
       }
       if (needs_time_redraw) {
         needs_time_redraw = false;
         redrawTimerTimeRegions();
-        frame_dirty = true;
       }
     } else {
       needs_art_redraw = false;
@@ -2518,7 +2548,6 @@ void loop() {
 
         draw_timer_ring(layout, timers[idx], frac, now);
       }
-      frame_dirty = true;
     }
     #endif
   }
