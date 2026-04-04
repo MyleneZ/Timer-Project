@@ -47,7 +47,7 @@ struct PanelLayout;
 // ======================= FEATURE FLAGS =======================
 #define USE_MIC       0   // Disable local mic (using Nicla Voice instead)
 #define USE_RING      1   // Enable ring animation
-#define USE_GIFS      0   // Disable GIF blits for stability on the RGB panel
+#define USE_GIFS      1   // Re-enable GIFs; rely on auto-flush framebuffer updates
 #define USE_SPEAKER   1   // Enable speaker output
 #define USE_BLE       1   // Enable BLE for Nicla Voice communication
 
@@ -137,6 +137,7 @@ static uint32_t demo_start_ms = 0;
 const int VU_W = 44;
 const int UI_RIGHT_H = 140;
 const int UI_RIGHT_Y = 320 - UI_RIGHT_H;
+const int BITMAP_X_ALIGN_FIX = 80;
 
 const int RING_SZ = 192;
 const int RING_RO = 96;
@@ -561,8 +562,8 @@ static void draw_ring(float fracRemaining, uint8_t caps,
     }
   }
 
-gfx->startWrite();
-  gfx->draw16bitRGBBitmap(x, y, ringbuf, SZ, SZ);
+  gfx->startWrite();
+  gfx->draw16bitRGBBitmap(x - BITMAP_X_ALIGN_FIX, y, ringbuf, SZ, SZ);
   gfx->endWrite();
 }
 #endif
@@ -1941,12 +1942,30 @@ static void draw_books_illustration(int cx, int cy, int size, const TimerTheme& 
 }
 
 static void draw_baking_illustration(int cx, int cy, int size, const TimerTheme& theme) {
-  gfx->fillCircle(cx, cy + size / 10, size / 3, theme.art_primary);
-  gfx->fillCircle(cx, cy + size / 5, size / 4, theme.art_secondary);
-  gfx->fillRect(cx - size / 4, cy - size / 12, size / 2, size / 9, theme.art_primary);
-  gfx->drawLine(cx + size / 6, cy - size / 3, cx + size / 4, cy + size / 9, theme.art_tertiary);
-  gfx->drawLine(cx + size / 12, cy - size / 4, cx + size / 4, cy + size / 11, theme.art_tertiary);
-  gfx->drawLine(cx + size / 8, cy - size / 6, cx + size / 3, cy - size / 8, theme.art_tertiary);
+  int bowl_w = (size * 11) / 14;
+  int bowl_h = size / 2;
+  int bowl_y = cy + size / 6;
+  int bowl_x = cx - bowl_w / 2;
+  int rim_h = bowl_h / 4;
+
+  gfx->fillRoundRect(bowl_x, bowl_y - bowl_h / 2, bowl_w, bowl_h, bowl_h / 2, theme.art_primary);
+  gfx->fillRoundRect(bowl_x + 8, bowl_y - bowl_h / 2 + 8, bowl_w - 16, bowl_h - 10, bowl_h / 2, hex565(0xff7f73));
+  gfx->fillRoundRect(bowl_x + 18, bowl_y - bowl_h / 2 + 12, bowl_w - 36, rim_h + 10, rim_h / 2, COLOR_TEXT_WHITE);
+  gfx->drawFastHLine(bowl_x + 20, bowl_y - bowl_h / 2 + rim_h + 8, bowl_w - 40, lerp565(theme.art_primary, theme.art_shadow, 140));
+
+  int whisk_x = cx + bowl_w / 6;
+  int whisk_top = cy - size / 3;
+  int whisk_bottom = bowl_y + bowl_h / 8;
+  gfx->fillRoundRect(whisk_x - 6, whisk_top, 12, (whisk_bottom - whisk_top) - 4, 6, theme.art_tertiary);
+  gfx->drawLine(whisk_x - 14, whisk_bottom, whisk_x - 3, whisk_bottom + 30, theme.art_shadow);
+  gfx->drawLine(whisk_x - 6, whisk_bottom - 2, whisk_x + 2, whisk_bottom + 30, theme.art_shadow);
+  gfx->drawLine(whisk_x + 2, whisk_bottom - 2, whisk_x + 10, whisk_bottom + 28, theme.art_shadow);
+  gfx->drawLine(whisk_x + 10, whisk_bottom - 4, whisk_x + 18, whisk_bottom + 24, theme.art_shadow);
+
+  gfx->fillCircle(cx - bowl_w / 2 + 18, cy - 4, 3, COLOR_TEXT_WHITE);
+  gfx->fillCircle(cx - bowl_w / 2 + 42, cy - 28, 2, COLOR_TEXT_WHITE);
+  gfx->drawCircle(cx + bowl_w / 2 - 20, cy - 34, 5, COLOR_TEXT_WHITE);
+  gfx->drawCircle(cx + bowl_w / 2 + 8, cy - 14, 3, COLOR_TEXT_WHITE);
 }
 
 static void draw_dumbbell_illustration(int cx, int cy, int size, const TimerTheme& theme) {
@@ -2504,10 +2523,6 @@ void loop() {
     #endif
   }
 
-  if (frame_dirty) {
-    gfx->flush();
-  }
-  
   // === Handle alarm sounds ===
   #if USE_SPEAKER
   bool any_ringing = false;
