@@ -88,10 +88,10 @@ struct DemoCommand {
 //         "CMD:STOP"
 static DemoCommand demo_command_queue[] = {
   // Start with no timers, then add them one by one
-  { 3000,  "CMD:SET,NAME:Exercise,DURATION:180", false },     // 3 sec: Create 3-minute "Baking" timer
+  { 3000,  "CMD:SET,NAME:Baking,DURATION:180", false },     // 3 sec: Create 3-minute "Baking" timer
   { 8000,  "CMD:SET,NAME:Baking,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
   { 14000,  "CMD:CANCEL,NAME:Baking", false },      // 8 sec: Create 2-minute "Break" timer
-  { 15000, "CMD:ADD,NAME:Exercise,DURATION:60", false },      // 15 sec: Add 1 minute to Baking
+  { 15000, "CMD:ADD,NAME:Baking,DURATION:60", false },      // 15 sec: Add 1 minute to Baking
   { 20000, "CMD:SET,NAME:Homework,DURATION:90", false },    // 20 sec: Create 90-second "Homework" timer (3rd)
   { 25000,  "CMD:SET,NAME:Break,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
   { 30000, "CMD:MINUS,NAME:Break,DURATION:30", false },     // 30 sec: Subtract 30 sec from Break
@@ -248,7 +248,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0x213342), // bg
     hex565(0xf2f5f8), // ring_start
     hex565(0xafbdd5), // ring_end
-    hex565(0x748BA9), // ring_empty
+    hex565(0x7188A6), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xdce7f1), // art_primary
     hex565(0xb6c9d8), // art_secondary
@@ -2143,6 +2143,27 @@ static void draw_timer_panel(const PanelLayout& layout, const Timer& timer, uint
   draw_timer_ring(layout, timer, frac, now);
 }
 
+static void draw_timer_dividers(const int* activeIndices, int count) {
+  if (count <= 1) return;
+
+  for (int i = 0; i < count - 1; i++) {
+    const TimerTheme left_theme = resolved_theme_for_timer(timers[activeIndices[i]]);
+    const TimerTheme right_theme = resolved_theme_for_timer(timers[activeIndices[i + 1]]);
+    const PanelLayout left_layout = panel_layout_for(count, i);
+    const int divider_x = left_layout.x + left_layout.w;
+
+    const uint16_t left_outer = lerp565(left_theme.bg, COLOR_TEXT_WHITE, 30);
+    const uint16_t left_inner = lerp565(left_theme.bg, COLOR_TEXT_WHITE, 72);
+    const uint16_t right_inner = lerp565(right_theme.bg, COLOR_TEXT_WHITE, 72);
+    const uint16_t right_outer = lerp565(right_theme.bg, COLOR_TEXT_WHITE, 30);
+
+    if (divider_x - 2 >= 0) gfx->drawFastVLine(divider_x - 2, 0, 320, left_outer);
+    if (divider_x - 1 >= 0) gfx->drawFastVLine(divider_x - 1, 0, 320, left_inner);
+    if (divider_x < 960) gfx->drawFastVLine(divider_x, 0, 320, right_inner);
+    if (divider_x + 1 < 960) gfx->drawFastVLine(divider_x + 1, 0, 320, right_outer);
+  }
+}
+
 static void drawNoTimersScreen(uint32_t now) {
   gfx->fillScreen(COLOR_IDLE_BG);
   draw_idle_border(now);
@@ -2430,6 +2451,8 @@ static void renderTimers() {
     strcpy(last_text[i], hhmmss);
     strcpy(last_name[i], timers[idx].name);
   }
+
+  draw_timer_dividers(activeIndices, count);
 }
 
 // ======================= DEMO MODE PROCESSING =======================
