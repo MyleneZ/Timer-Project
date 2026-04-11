@@ -88,10 +88,10 @@ struct DemoCommand {
 //         "CMD:STOP"
 static DemoCommand demo_command_queue[] = {
   // Start with no timers, then add them one by one
-  { 3000,  "CMD:SET,NAME:Baking,DURATION:180", false },     // 3 sec: Create 3-minute "Baking" timer
-  { 8000,  "CMD:SET,NAME:Exercise,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
-  { 14000,  "CMD:CANCEL,NAME:Exercise", false },      // 8 sec: Create 2-minute "Break" timer
-  { 15000, "CMD:ADD,NAME:Baking,DURATION:60", false },      // 15 sec: Add 1 minute to Baking
+  { 3000,  "CMD:SET,NAME:Exercise,DURATION:180", false },     // 3 sec: Create 3-minute "Baking" timer
+  { 8000,  "CMD:SET,NAME:Baking,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
+  { 14000,  "CMD:CANCEL,NAME:Baking", false },      // 8 sec: Create 2-minute "Break" timer
+  { 15000, "CMD:ADD,NAME:Exercise,DURATION:60", false },      // 15 sec: Add 1 minute to Baking
   { 20000, "CMD:SET,NAME:Homework,DURATION:90", false },    // 20 sec: Create 90-second "Homework" timer (3rd)
   { 25000,  "CMD:SET,NAME:Break,DURATION:120", false },      // 8 sec: Create 2-minute "Break" timer
   { 30000, "CMD:MINUS,NAME:Break,DURATION:30", false },     // 30 sec: Subtract 30 sec from Break
@@ -236,8 +236,8 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
   {
     hex565(0x32201B), // bg
     hex565(0xf4f4f4), // ring_start
-    hex565(0xAF8C7F), // ring_end
-    hex565(0x9b8d8a), // ring_empty
+    hex565(0xAC9391), // ring_end
+    hex565(0x786262), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xe9e5e2), // art_primary
     hex565(0xc8c8cb), // art_secondary
@@ -248,7 +248,7 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0x213342), // bg
     hex565(0xf2f5f8), // ring_start
     hex565(0xafbdd5), // ring_end
-    hex565(0x7e94b1), // ring_empty
+    hex565(0x748BA9), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xdce7f1), // art_primary
     hex565(0xb6c9d8), // art_secondary
@@ -257,9 +257,9 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
   },
   {
     hex565(0x4A1829), // bg
-    hex565(0xf6e7eb), // ring_start
-    hex565(0xE991A4), // ring_end
-    hex565(0xb27186), // ring_empty
+    hex565(0xFFFFFF), // ring_start
+    hex565(0xE4AAAF), // ring_end
+    hex565(0xAD6C77), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xff9274), // art_primary
     hex565(0xffd8ad), // art_secondary
@@ -267,10 +267,10 @@ static const TimerTheme THEME_STYLES[THEME_COUNT] = {
     hex565(0x6e3a4d)  // art_shadow
   },
   {
-    hex565(0x28656c), // bg
+    hex565(0x173032), // bg
     hex565(0xebf7f4), // ring_start
-    hex565(0x63d6c7), // ring_end
-    hex565(0x5a9998), // ring_empty
+    hex565(0x9DD8D0), // ring_end
+    hex565(0x68A5A1), // ring_empty
     COLOR_TEXT_WHITE, // text
     hex565(0xc5e7df), // art_primary
     hex565(0xa6d4cb), // art_secondary
