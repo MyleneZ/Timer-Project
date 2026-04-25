@@ -35,6 +35,7 @@ static volatile bool g_playing = false;
 static volatile uint8_t g_volume = 180; // 0..255
 static int g_current = 0;
 static size_t g_pwm_carrier_idx = 0;
+static bool g_pwm_attached = false;
 
 static uint16_t scale_sample(uint16_t raw) {
 	int centered = (int)raw - (int)PCM_SILENCE;
@@ -58,12 +59,33 @@ static void sample_tick(void*) {
 	g_sample_idx = idx + 1;
 }
 
+static void attach_pwm() {
+	if (g_pwm_attached) return;
+	if (!ledcAttach(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS)) {
+		Serial.println("[SFX] LEDC attach failed.");
+		while (true) delay(1000);
+	}
+	g_pwm_attached = true;
+	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+}
+
+static void silence_output() {
+	if (g_pwm_attached) {
+		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		delay(1);
+		ledcDetach(AUDIO_PIN);
+		g_pwm_attached = false;
+	}
+	pinMode(AUDIO_PIN, OUTPUT);
+	digitalWrite(AUDIO_PIN, LOW);
+}
+
 static void stop_playback() {
 	g_playing = false;
 	if (g_sample_timer) {
 		esp_timer_stop(g_sample_timer);
 	}
-	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	silence_output();
 	g_clip = nullptr;
 	g_sample_idx = 0;
 }
@@ -71,10 +93,15 @@ static void stop_playback() {
 static void set_pwm_carrier(size_t idx) {
 	if (idx >= PWM_CARRIER_COUNT) idx = 0;
 	g_pwm_carrier_idx = idx;
-	uint32_t actual = ledcChangeFrequency(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS);
-	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	if (g_pwm_attached) {
+		uint32_t actual = ledcChangeFrequency(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS);
+		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		Serial.printf("[SFX] PWM carrier requested=%u Hz actual=%u Hz\n",
+									(unsigned)PWM_CARRIERS[g_pwm_carrier_idx], (unsigned)actual);
+		return;
+	}
 	Serial.printf("[SFX] PWM carrier requested=%u Hz actual=%u Hz\n",
-								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx], (unsigned)actual);
+								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx], 0U);
 }
 
 static void play_index(int idx) {
@@ -84,6 +111,7 @@ static void play_index(int idx) {
 	g_current = idx;
 
 	stop_playback();
+	attach_pwm();
 	g_clip = &SFX_PCM_LIST[g_current];
 	g_sample_idx = 0;
 	g_playing = true;
@@ -127,13 +155,9 @@ void setup() {
 		while (true) delay(1000);
 	}
 
-	if (!ledcAttach(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS)) {
-		Serial.println("[SFX] LEDC attach failed.");
-		while (true) delay(1000);
-	}
 	Serial.printf("[SFX] Serial baud: 115200\n");
 	Serial.printf("[SFX] Initial PWM carrier: %u Hz\n", (unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
-	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	silence_output();
 
 	const esp_timer_create_args_t timer_args = {
 		.callback = &sample_tick,
@@ -154,7 +178,7 @@ void setup() {
 void loop() {
 	if (g_clip && !g_playing) {
 		esp_timer_stop(g_sample_timer);
-		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		silence_output();
 		g_clip = nullptr;
 		Serial.println("[SFX] Done.");
 	}
