@@ -51,9 +51,9 @@ struct PanelLayout;
 #define USE_SPEAKER   1   // Enable speaker output
 #define USE_BLE       1   // Enable BLE for Nicla Voice communication
 
-// If your speaker is driven by an analog/PWM input (common on STEMMA speaker amps),
-// MP3->I2S output will sound awful. Default to PWM-based SFX.
-#define USE_MP3_SFX   0   // 0 = PWM beep SFX (recommended), 1 = MP3 over I2S
+// The JST STEMMA speaker amp is wired as a single analog-ish input on A0, not a
+// full external I2S DAC. Use the library's single-pin delta-sigma output path.
+#define USE_MP3_SFX   1   // 0 = PWM beep SFX fallback, 1 = MP3 via single-pin NoDAC
 
 // Filesystem used for activity GIF assets.
 #define USE_LITTLEFS      1
@@ -61,7 +61,7 @@ struct PanelLayout;
 
 // ======================= AUDIO LEVELS =======================
 // MP3 SFX on small Class-D amps can clip easily. Start conservative.
-static float g_sfx_gain = 0.12f;  // 0.0 .. 1.0
+static float g_sfx_gain = 0.10f;  // 0.0 .. 1.0
 
 // PWM loudness control (only used when USE_MP3_SFX == 0)
 // With 8-bit resolution, duty is 0..255. Keep conservative to avoid painful output.
@@ -108,20 +108,17 @@ static uint32_t demo_start_ms = 0;
 
   // STEMMA speaker JST (SIG is A0). We'll use LEDC PWM for SFX + alarm tones.
   static const int AUDIO_PIN = A0;
+  static bool g_pwm_audio_ready = false;
 
   #if USE_MP3_SFX
     #include <AudioFileSourcePROGMEM.h>
     #include <AudioGeneratorMP3.h>
-    #include <AudioOutputI2S.h>
+    #include <AudioOutputI2SNoDAC.h>
     #include "sounds/sfx_mp3_data.h"
-
-    #define I2S_SPK_BCLK  SCK
-    #define I2S_SPK_LRC   MOSI
-    #define I2S_SPK_DOUT  A0
 
     static AudioGeneratorMP3* g_mp3 = nullptr;
     static AudioFileSourcePROGMEM* g_src = nullptr;
-    static AudioOutputI2S* g_out = nullptr;
+    static AudioOutputI2SNoDAC* g_out = nullptr;
   #endif
 #endif
 
@@ -1443,10 +1440,11 @@ enum SfxId {
   SFX_CONFIRM = 1,
   SFX_PAUSE = 2,
   SFX_RESUME = 3,
-  SFX_PAUSE_RESUME = 4
+  SFX_ALARM = 4
 };
 
 static bool sfx_playing = false;
+static int g_current_sfx = -1;
 
 struct BeepStep {
   uint16_t freq_hz;   // 0 = silence
@@ -1465,13 +1463,38 @@ static const BeepStep SFX_CANCEL[] = {
 static const BeepStep SFX_RES[] = {
   { 988,  60 }, { 0, 25 }, { 1319, 70 }, { 0, 0 }
 };
-static const BeepStep SFX_TOGGLE[] = {
-  { 1319, 55 }, { 0, 20 }, { 988, 55 }, { 0, 0 }
+static const BeepStep SFX_ALARM_BEEP[] = {
+  { 880, 140 }, { 0, 110 }, { 988, 140 }, { 0, 110 }, { 0, 0 }
 };
 
 static const BeepStep* g_beep_steps = nullptr;
 static uint8_t g_beep_idx = 0;
 static uint32_t g_beep_next_ms = 0;
+
+#if USE_MP3_SFX
+static const SfxMp3* find_sfx_mp3(const char* name) {
+  if (!name) return nullptr;
+  for (size_t i = 0; i < SFX_MP3_COUNT; ++i) {
+    if (strcmp(SFX_MP3_LIST[i].name, name) == 0) return &SFX_MP3_LIST[i];
+  }
+  return nullptr;
+}
+
+static const SfxMp3* sfx_mp3_for_id(int idx) {
+  switch (idx) {
+    case SFX_POWER_ON: return find_sfx_mp3("power_on");
+    case SFX_CONFIRM:  return find_sfx_mp3("confirm");
+    case SFX_PAUSE:    return find_sfx_mp3("pause");
+    case SFX_RESUME:   return find_sfx_mp3("resume");
+    case SFX_ALARM:    return find_sfx_mp3("alarm");
+    default:           return nullptr;
+  }
+}
+
+static bool sfx_is_alarm_playing() {
+  return sfx_playing && (g_current_sfx == SFX_ALARM);
+}
+#endif
 
 static void sfx_stop() {
   #if USE_MP3_SFX
@@ -1487,19 +1510,25 @@ static void sfx_stop() {
   #endif
 
   // Stop PWM tone output
-  ledcWriteTone(AUDIO_PIN, 0);
-  ledcWrite(AUDIO_PIN, 0);
+  if (g_pwm_audio_ready) {
+    ledcWriteTone(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_PIN, 0);
+  }
   g_beep_steps = nullptr;
   g_beep_idx = 0;
   sfx_playing = false;
+  g_current_sfx = -1;
 }
 
 static void sfx_play(int idx) {
   sfx_stop();
 
   #if USE_MP3_SFX
-  if (SFX_MP3_COUNT == 0) return;
-  if (idx < 0 || idx >= (int)SFX_MP3_COUNT) return;
+  const SfxMp3* clip = sfx_mp3_for_id(idx);
+  if (!clip) {
+    Serial.printf("[SFX] Missing clip for id=%d\n", idx);
+    return;
+  }
 
   if (g_out) {
     if (g_sfx_gain < 0.0f) g_sfx_gain = 0.0f;
@@ -1508,10 +1537,11 @@ static void sfx_play(int idx) {
   }
 
   g_mp3 = new AudioGeneratorMP3();
-  g_src = new AudioFileSourcePROGMEM(SFX_MP3_LIST[idx].data, SFX_MP3_LIST[idx].len);
+  g_src = new AudioFileSourcePROGMEM(clip->data, clip->len);
   if (g_mp3->begin(g_src, g_out)) {
     sfx_playing = true;
-    Serial.printf("[SFX] Playing: %s\n", SFX_MP3_LIST[idx].name);
+    g_current_sfx = idx;
+    Serial.printf("[SFX] Playing: %s\n", clip->name);
   }
   #else
   // PWM-based beep SFX (reliable on analog/PWM speaker input)
@@ -1521,13 +1551,14 @@ static void sfx_play(int idx) {
     case SFX_CONFIRM: steps = SFX_OK; break;
     case SFX_PAUSE: steps = SFX_CANCEL; break;
     case SFX_RESUME: steps = SFX_RES; break;
-    case SFX_PAUSE_RESUME: steps = SFX_TOGGLE; break;
+    case SFX_ALARM: steps = SFX_ALARM_BEEP; break;
     default: steps = SFX_OK; break;
   }
   g_beep_steps = steps;
   g_beep_idx = 0;
   g_beep_next_ms = millis();
   sfx_playing = true;
+  g_current_sfx = idx;
   #endif
 }
 
@@ -1537,6 +1568,7 @@ static void sfx_loop() {
     if (!g_mp3->loop()) {
       g_mp3->stop();
       sfx_playing = false;
+      g_current_sfx = -1;
     }
   }
   #else
@@ -1547,17 +1579,21 @@ static void sfx_loop() {
 
   const BeepStep step = g_beep_steps[g_beep_idx++];
   if (step.dur_ms == 0) {
-    ledcWriteTone(AUDIO_PIN, 0);
-    ledcWrite(AUDIO_PIN, 0);
+    if (g_pwm_audio_ready) {
+      ledcWriteTone(AUDIO_PIN, 0);
+      ledcWrite(AUDIO_PIN, 0);
+    }
     sfx_playing = false;
     g_beep_steps = nullptr;
     return;
   }
 
   if (step.freq_hz == 0) {
-    ledcWriteTone(AUDIO_PIN, 0);
-    ledcWrite(AUDIO_PIN, 0);
-  } else {
+    if (g_pwm_audio_ready) {
+      ledcWriteTone(AUDIO_PIN, 0);
+      ledcWrite(AUDIO_PIN, 0);
+    }
+  } else if (g_pwm_audio_ready) {
     ledcWriteTone(AUDIO_PIN, step.freq_hz);
     ledcWrite(AUDIO_PIN, g_pwm_duty);
   }
@@ -1572,8 +1608,10 @@ static void play_alarm_tone(bool enable) {
   static uint32_t last_toggle = 0;
   
   if (!enable) {
-    ledcWriteTone(AUDIO_PIN, 0);
-    ledcWrite(AUDIO_PIN, 0);
+    if (g_pwm_audio_ready) {
+      ledcWriteTone(AUDIO_PIN, 0);
+      ledcWrite(AUDIO_PIN, 0);
+    }
     alarm_state = false;
     return;
   }
@@ -1582,8 +1620,10 @@ static void play_alarm_tone(bool enable) {
   if (now - last_toggle > 500) {
     last_toggle = now;
     alarm_state = !alarm_state;
-    ledcWriteTone(AUDIO_PIN, alarm_state ? 880 : 0);  // 880Hz beep
-    ledcWrite(AUDIO_PIN, alarm_state ? g_pwm_duty : 0);
+    if (g_pwm_audio_ready) {
+      ledcWriteTone(AUDIO_PIN, alarm_state ? 880 : 0);  // 880Hz beep
+      ledcWrite(AUDIO_PIN, alarm_state ? g_pwm_duty : 0);
+    }
   }
 }
 #endif
@@ -2350,15 +2390,19 @@ void setup() {
   // NOTE: ESP32 Arduino core 3.x changed LEDC APIs; this matches speaker_test.ino.
   if (!ledcAttach(AUDIO_PIN, 10000, 8)) {
     Serial.println("[BOOT] Audio PWM attach failed");
+  } else {
+    g_pwm_audio_ready = true;
   }
-  ledcWriteTone(AUDIO_PIN, 0);
-  ledcWrite(AUDIO_PIN, 0);
+  if (g_pwm_audio_ready) {
+    ledcWriteTone(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_PIN, 0);
+  }
   #endif
 
   #if USE_MP3_SFX
-  // Optional: MP3 SFX over I2S (only if your speaker amp is I2S-driven).
-  g_out = new AudioOutputI2S();
-  g_out->SetPinout(I2S_SPK_BCLK, I2S_SPK_LRC, I2S_SPK_DOUT);
+  // MP3 SFX over single-pin delta-sigma output on the speaker amp input (A0).
+  g_out = new AudioOutputI2SNoDAC(AUDIO_PIN);
+  g_out->SetOversampling(64);
   g_out->SetGain(g_sfx_gain);
   #endif
   
@@ -2633,9 +2677,16 @@ void loop() {
   }
   
   if (any_ringing && !sfx_playing) {
-    // Use simple tone for alarm (more reliable than MP3 for continuous sound)
+    #if USE_MP3_SFX
+    sfx_play(SFX_ALARM);
+    play_alarm_tone(false);
+    #else
     play_alarm_tone(true);
+    #endif
   } else if (!any_ringing) {
+    #if USE_MP3_SFX
+    if (sfx_is_alarm_playing()) sfx_stop();
+    #endif
     play_alarm_tone(false);
   }
   #endif
