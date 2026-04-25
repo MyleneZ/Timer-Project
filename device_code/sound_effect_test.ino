@@ -22,6 +22,10 @@
 // ---------------- STEMMA Speaker Pinout ----------------
 // Qualia A0 JST SIG -> STEMMA Speaker white wire.
 static const int AUDIO_PIN = A0;
+static const uint8_t PWM_RESOLUTION_BITS = 8;
+static const uint8_t PCM_SILENCE = 128;
+static const uint32_t PWM_CARRIERS[] = {62500, 125000, 250000, 312500};
+static const size_t PWM_CARRIER_COUNT = sizeof(PWM_CARRIERS) / sizeof(PWM_CARRIERS[0]);
 
 // --------------- Player State ----------------
 static esp_timer_handle_t g_sample_timer = nullptr;
@@ -30,6 +34,7 @@ static volatile size_t g_sample_idx = 0;
 static volatile bool g_playing = false;
 static volatile uint8_t g_volume = 180; // 0..255
 static int g_current = 0;
+static size_t g_pwm_carrier_idx = 2;
 
 static uint8_t scale_sample(uint8_t raw) {
 	int centered = (int)raw - 128;
@@ -44,7 +49,7 @@ static void sample_tick(void*) {
 	size_t idx = g_sample_idx;
 	if (!g_playing || !clip || idx >= clip->len) {
 		g_playing = false;
-		ledcWrite(AUDIO_PIN, 0);
+		ledcWrite(AUDIO_PIN, PCM_SILENCE);
 		return;
 	}
 
@@ -58,9 +63,18 @@ static void stop_playback() {
 	if (g_sample_timer) {
 		esp_timer_stop(g_sample_timer);
 	}
-	ledcWrite(AUDIO_PIN, 0);
+	ledcWrite(AUDIO_PIN, PCM_SILENCE);
 	g_clip = nullptr;
 	g_sample_idx = 0;
+}
+
+static void set_pwm_carrier(size_t idx) {
+	if (idx >= PWM_CARRIER_COUNT) idx = 0;
+	g_pwm_carrier_idx = idx;
+	uint32_t actual = ledcChangeFrequency(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS);
+	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	Serial.printf("[SFX] PWM carrier requested=%u Hz actual=%u Hz\n",
+								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx], (unsigned)actual);
 }
 
 static void play_index(int idx) {
@@ -86,12 +100,14 @@ static void print_menu() {
 	Serial.println();
 	Serial.println("=== Sound Effect Test (PWM PCM on STEMMA speaker) ===");
 	Serial.printf("STEMMA speaker signal pin: A0/GPIO %d\n", (int)AUDIO_PIN);
-	Serial.println("PWM carrier: 62500 Hz, PCM: 16000 Hz mono unsigned 8-bit");
+	Serial.printf("PWM carrier: %u Hz, PCM: 16000 Hz mono unsigned 8-bit\n",
+								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
 	Serial.println("Commands:");
 	Serial.println("  n        -> next sound");
 	Serial.println("  p        -> previous sound");
 	Serial.println("  s        -> stop");
 	Serial.println("  + / -    -> volume up/down");
+	Serial.println("  f        -> cycle PWM carrier");
 	Serial.println("  0..9     -> play index (0-based)");
 	Serial.println("  ?        -> print menu");
 	Serial.println();
@@ -111,11 +127,11 @@ void setup() {
 		while (true) delay(1000);
 	}
 
-	if (!ledcAttach(AUDIO_PIN, 62500, 8)) {
+	if (!ledcAttach(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS)) {
 		Serial.println("[SFX] LEDC attach failed.");
 		while (true) delay(1000);
 	}
-	ledcWrite(AUDIO_PIN, 0);
+	ledcWrite(AUDIO_PIN, PCM_SILENCE);
 
 	const esp_timer_create_args_t timer_args = {
 		.callback = &sample_tick,
@@ -136,7 +152,7 @@ void setup() {
 void loop() {
 	if (g_clip && !g_playing) {
 		esp_timer_stop(g_sample_timer);
-		ledcWrite(AUDIO_PIN, 0);
+		ledcWrite(AUDIO_PIN, PCM_SILENCE);
 		g_clip = nullptr;
 		Serial.println("[SFX] Done.");
 	}
@@ -160,6 +176,12 @@ void loop() {
 		} else if (c == '-') {
 			g_volume = (g_volume < 25) ? 0 : (uint8_t)(g_volume - 25);
 			Serial.printf("[SFX] Volume=%u/255\n", (unsigned)g_volume);
+		} else if (c == 'f') {
+			bool was_playing = g_playing;
+			int replay_idx = g_current;
+			stop_playback();
+			set_pwm_carrier(g_pwm_carrier_idx + 1);
+			if (was_playing) play_index(replay_idx);
 		} else if (c == '?') {
 			print_menu();
 		} else if (c >= '0' && c <= '9') {
