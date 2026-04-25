@@ -34,7 +34,7 @@ static volatile size_t g_sample_idx = 0;
 static volatile bool g_playing = false;
 static volatile uint8_t g_volume = 180; // 0..255
 static int g_current = 0;
-static size_t g_pwm_carrier_idx = 2;
+static size_t g_pwm_carrier_idx = 0;
 
 static uint8_t scale_sample(uint8_t raw) {
 	int centered = (int)raw - 128;
@@ -131,6 +131,8 @@ void setup() {
 		Serial.println("[SFX] LEDC attach failed.");
 		while (true) delay(1000);
 	}
+	Serial.printf("[SFX] Serial baud: 115200\n");
+	Serial.printf("[SFX] Initial PWM carrier: %u Hz\n", (unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
 	ledcWrite(AUDIO_PIN, PCM_SILENCE);
 
 	const esp_timer_create_args_t timer_args = {
