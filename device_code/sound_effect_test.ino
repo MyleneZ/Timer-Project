@@ -22,9 +22,9 @@
 // ---------------- STEMMA Speaker Pinout ----------------
 // Qualia A0 JST SIG -> STEMMA Speaker white wire.
 static const int AUDIO_PIN = A0;
-static const uint8_t PWM_RESOLUTION_BITS = 8;
-static const uint8_t PCM_SILENCE = 128;
-static const uint32_t PWM_CARRIERS[] = {62500, 125000, 250000, 312500};
+static const uint8_t PWM_RESOLUTION_BITS = 9;
+static const uint16_t PCM_SILENCE = 256;
+static const uint32_t PWM_CARRIERS[] = {62500, 78125, 39062, 125000};
 static const size_t PWM_CARRIER_COUNT = sizeof(PWM_CARRIERS) / sizeof(PWM_CARRIERS[0]);
 
 // --------------- Player State ----------------
@@ -36,12 +36,12 @@ static volatile uint8_t g_volume = 180; // 0..255
 static int g_current = 0;
 static size_t g_pwm_carrier_idx = 0;
 
-static uint8_t scale_sample(uint8_t raw) {
-	int centered = (int)raw - 128;
-	int scaled = 128 + ((centered * (int)g_volume) / 255);
+static uint16_t scale_sample(uint16_t raw) {
+	int centered = (int)raw - (int)PCM_SILENCE;
+	int scaled = (int)PCM_SILENCE + ((centered * (int)g_volume) / 255);
 	if (scaled < 0) return 0;
-	if (scaled > 255) return 255;
-	return (uint8_t)scaled;
+	if (scaled > 511) return 511;
+	return (uint16_t)scaled;
 }
 
 static void sample_tick(void*) {
@@ -53,7 +53,7 @@ static void sample_tick(void*) {
 		return;
 	}
 
-	uint8_t raw = pgm_read_byte(clip->data + idx);
+	uint16_t raw = pgm_read_word(clip->data + idx);
 	ledcWrite(AUDIO_PIN, scale_sample(raw));
 	g_sample_idx = idx + 1;
 }
@@ -100,7 +100,7 @@ static void print_menu() {
 	Serial.println();
 	Serial.println("=== Sound Effect Test (PWM PCM on STEMMA speaker) ===");
 	Serial.printf("STEMMA speaker signal pin: A0/GPIO %d\n", (int)AUDIO_PIN);
-	Serial.printf("PWM carrier: %u Hz, PCM: 16000 Hz mono unsigned 8-bit\n",
+	Serial.printf("PWM carrier: %u Hz, PCM: 16000 Hz mono unsigned 9-bit\n",
 								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
 	Serial.println("Commands:");
 	Serial.println("  n        -> next sound");
