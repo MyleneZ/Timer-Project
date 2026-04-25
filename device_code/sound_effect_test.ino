@@ -26,6 +26,9 @@ static const uint8_t PWM_RESOLUTION_BITS = 9;
 static const uint16_t PCM_SILENCE = 256;
 static const uint32_t PWM_CARRIERS[] = {62500, 78125, 39062, 125000};
 static const size_t PWM_CARRIER_COUNT = sizeof(PWM_CARRIERS) / sizeof(PWM_CARRIERS[0]);
+static const size_t FADE_SAMPLES = 384; // 24 ms at 16 kHz
+static const uint32_t PRE_ROLL_MS = 30;
+static const uint32_t POST_ROLL_MS = 60;
 
 // --------------- Player State ----------------
 static esp_timer_handle_t g_sample_timer = nullptr;
@@ -45,6 +48,27 @@ static uint16_t scale_sample(uint16_t raw) {
 	return (uint16_t)scaled;
 }
 
+static uint16_t apply_envelope(uint16_t sample, size_t idx, size_t len) {
+	if (FADE_SAMPLES == 0 || len == 0) return sample;
+
+	size_t fade = FADE_SAMPLES;
+	if (fade > len / 2) fade = len / 2;
+	if (fade == 0) return sample;
+
+	uint32_t gain = 65535;
+	if (idx < fade) {
+		gain = (uint32_t)(idx + 1) * 65535UL / (uint32_t)fade;
+	} else if (idx >= len - fade) {
+		gain = (uint32_t)(len - idx) * 65535UL / (uint32_t)fade;
+	}
+
+	int centered = (int)sample - (int)PCM_SILENCE;
+	int shaped = (int)PCM_SILENCE + (int)((centered * (int32_t)gain) / 65535L);
+	if (shaped < 0) return 0;
+	if (shaped > 511) return 511;
+	return (uint16_t)shaped;
+}
+
 static void sample_tick(void*) {
 	const SfxPcm* clip = g_clip;
 	size_t idx = g_sample_idx;
@@ -55,7 +79,7 @@ static void sample_tick(void*) {
 	}
 
 	uint16_t raw = pgm_read_word(clip->data + idx);
-	ledcWrite(AUDIO_PIN, scale_sample(raw));
+	ledcWrite(AUDIO_PIN, apply_envelope(scale_sample(raw), idx, clip->len));
 	g_sample_idx = idx + 1;
 }
 
@@ -72,12 +96,11 @@ static void attach_pwm() {
 static void silence_output() {
 	if (g_pwm_attached) {
 		ledcWrite(AUDIO_PIN, PCM_SILENCE);
-		delay(1);
+		delay(POST_ROLL_MS);
 		ledcDetach(AUDIO_PIN);
 		g_pwm_attached = false;
 	}
-	pinMode(AUDIO_PIN, OUTPUT);
-	digitalWrite(AUDIO_PIN, LOW);
+	pinMode(AUDIO_PIN, INPUT);
 }
 
 static void stop_playback() {
@@ -112,6 +135,7 @@ static void play_index(int idx) {
 
 	stop_playback();
 	attach_pwm();
+	delay(PRE_ROLL_MS);
 	g_clip = &SFX_PCM_LIST[g_current];
 	g_sample_idx = 0;
 	g_playing = true;
