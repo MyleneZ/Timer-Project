@@ -1624,8 +1624,16 @@ static void sfx_play(int idx) {
 
 static void sfx_loop() {
   #if USE_MP3_SFX
-  // The MP3 decoder is serviced by sfx_task(). Keeping this function lets the
-  // main loop stay agnostic to the selected SFX backend.
+  // The MP3 decoder is normally serviced by sfx_task(). If task creation fails,
+  // fall back to the main-loop service path so SFX still work, just less robustly.
+  if (g_sfx_task_handle) return;
+  sfx_lock();
+  if (g_mp3 && g_mp3->isRunning()) {
+    if (!g_mp3->loop()) {
+      sfx_stop_locked();
+    }
+  }
+  sfx_unlock();
   #else
   if (!sfx_playing || !g_beep_steps) return;
 
@@ -2466,15 +2474,18 @@ void setup() {
   g_out->SetOversampling(64);
   g_out->SetGain(g_sfx_gain);
 
-  BaseType_t sfx_task_ok = xTaskCreatePinnedToCore(
-    sfx_task,
-    "sfx",
-    4096,
-    nullptr,
-    3,
-    &g_sfx_task_handle,
-    0
-  );
+  BaseType_t sfx_task_ok = pdFAIL;
+  if (g_sfx_mutex) {
+    sfx_task_ok = xTaskCreatePinnedToCore(
+      sfx_task,
+      "sfx",
+      4096,
+      nullptr,
+      3,
+      &g_sfx_task_handle,
+      0
+    );
+  }
   if (sfx_task_ok != pdPASS) {
     Serial.println("[BOOT] Audio task create failed");
     g_sfx_task_handle = nullptr;
