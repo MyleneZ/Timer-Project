@@ -111,6 +111,9 @@ static uint32_t demo_start_ms = 0;
   static bool g_pwm_audio_ready = false;
 
   #if USE_MP3_SFX
+    #include <freertos/FreeRTOS.h>
+    #include <freertos/semphr.h>
+    #include <freertos/task.h>
     #include <AudioFileSourcePROGMEM.h>
     #include <AudioGeneratorMP3.h>
     #include <AudioOutputI2SNoDAC.h>
@@ -119,6 +122,8 @@ static uint32_t demo_start_ms = 0;
     static AudioGeneratorMP3* g_mp3 = nullptr;
     static AudioFileSourcePROGMEM* g_src = nullptr;
     static AudioOutputI2SNoDAC* g_out = nullptr;
+    static SemaphoreHandle_t g_sfx_mutex = nullptr;
+    static TaskHandle_t g_sfx_task_handle = nullptr;
   #endif
 #endif
 
@@ -1443,8 +1448,8 @@ enum SfxId {
   SFX_ALARM = 4
 };
 
-static bool sfx_playing = false;
-static int g_current_sfx = -1;
+static volatile bool sfx_playing = false;
+static volatile int g_current_sfx = -1;
 
 struct BeepStep {
   uint16_t freq_hz;   // 0 = silence
@@ -1472,6 +1477,14 @@ static uint8_t g_beep_idx = 0;
 static uint32_t g_beep_next_ms = 0;
 
 #if USE_MP3_SFX
+static void sfx_lock() {
+  if (g_sfx_mutex) xSemaphoreTake(g_sfx_mutex, portMAX_DELAY);
+}
+
+static void sfx_unlock() {
+  if (g_sfx_mutex) xSemaphoreGive(g_sfx_mutex);
+}
+
 static const SfxMp3* find_sfx_mp3(const char* name) {
   if (!name) return nullptr;
   for (size_t i = 0; i < SFX_MP3_COUNT; ++i) {
@@ -1492,12 +1505,13 @@ static const SfxMp3* sfx_mp3_for_id(int idx) {
 }
 
 static bool sfx_is_alarm_playing() {
-  return sfx_playing && (g_current_sfx == SFX_ALARM);
+  sfx_lock();
+  bool alarm_playing = sfx_playing && (g_current_sfx == SFX_ALARM);
+  sfx_unlock();
+  return alarm_playing;
 }
-#endif
 
-static void sfx_stop() {
-  #if USE_MP3_SFX
+static void sfx_stop_locked() {
   if (g_mp3) {
     if (g_mp3->isRunning()) g_mp3->stop();
     delete g_mp3;
@@ -1507,9 +1521,7 @@ static void sfx_stop() {
     delete g_src;
     g_src = nullptr;
   }
-  #endif
 
-  // Stop PWM tone output
   if (g_pwm_audio_ready) {
     ledcWriteTone(AUDIO_PIN, 0);
     ledcWrite(AUDIO_PIN, 0);
@@ -1520,12 +1532,54 @@ static void sfx_stop() {
   g_current_sfx = -1;
 }
 
-static void sfx_play(int idx) {
-  sfx_stop();
+static void sfx_task(void*) {
+  for (;;) {
+    bool decoder_was_running = false;
 
+    sfx_lock();
+    if (g_mp3 && g_mp3->isRunning()) {
+      decoder_was_running = true;
+      if (!g_mp3->loop()) {
+        sfx_stop_locked();
+      }
+    }
+    sfx_unlock();
+
+    if (decoder_was_running) {
+      taskYIELD();
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
+  }
+}
+#endif
+
+static void sfx_stop() {
   #if USE_MP3_SFX
+  sfx_lock();
+  sfx_stop_locked();
+  sfx_unlock();
+  #else
+  // Stop PWM tone output
+  if (g_pwm_audio_ready) {
+    ledcWriteTone(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_PIN, 0);
+  }
+  g_beep_steps = nullptr;
+  g_beep_idx = 0;
+  sfx_playing = false;
+  g_current_sfx = -1;
+  #endif
+}
+
+static void sfx_play(int idx) {
+  #if USE_MP3_SFX
+  sfx_lock();
+  sfx_stop_locked();
+
   const SfxMp3* clip = sfx_mp3_for_id(idx);
   if (!clip) {
+    sfx_unlock();
     Serial.printf("[SFX] Missing clip for id=%d\n", idx);
     return;
   }
@@ -1538,12 +1592,18 @@ static void sfx_play(int idx) {
 
   g_mp3 = new AudioGeneratorMP3();
   g_src = new AudioFileSourcePROGMEM(clip->data, clip->len);
-  if (g_mp3->begin(g_src, g_out)) {
+  if (g_mp3 && g_src && g_mp3->begin(g_src, g_out)) {
     sfx_playing = true;
     g_current_sfx = idx;
     Serial.printf("[SFX] Playing: %s\n", clip->name);
+  } else {
+    sfx_stop_locked();
+    Serial.printf("[SFX] Failed to start clip: %s\n", clip->name);
   }
+  sfx_unlock();
   #else
+  sfx_stop();
+
   // PWM-based beep SFX (reliable on analog/PWM speaker input)
   const BeepStep* steps = nullptr;
   switch (idx) {
@@ -1564,13 +1624,8 @@ static void sfx_play(int idx) {
 
 static void sfx_loop() {
   #if USE_MP3_SFX
-  if (g_mp3 && g_mp3->isRunning()) {
-    if (!g_mp3->loop()) {
-      g_mp3->stop();
-      sfx_playing = false;
-      g_current_sfx = -1;
-    }
-  }
+  // The MP3 decoder is serviced by sfx_task(). Keeping this function lets the
+  // main loop stay agnostic to the selected SFX backend.
   #else
   if (!sfx_playing || !g_beep_steps) return;
 
@@ -2401,9 +2456,29 @@ void setup() {
 
   #if USE_MP3_SFX
   // MP3 SFX over single-pin delta-sigma output on the speaker amp input (A0).
+  g_sfx_mutex = xSemaphoreCreateMutex();
+  if (!g_sfx_mutex) {
+    Serial.println("[BOOT] Audio mutex create failed");
+  }
+
   g_out = new AudioOutputI2SNoDAC(AUDIO_PIN);
+  g_out->SetBuffers(8, 2048);
   g_out->SetOversampling(64);
   g_out->SetGain(g_sfx_gain);
+
+  BaseType_t sfx_task_ok = xTaskCreatePinnedToCore(
+    sfx_task,
+    "sfx",
+    4096,
+    nullptr,
+    3,
+    &g_sfx_task_handle,
+    0
+  );
+  if (sfx_task_ok != pdPASS) {
+    Serial.println("[BOOT] Audio task create failed");
+    g_sfx_task_handle = nullptr;
+  }
   #endif
   
   Serial.println("[BOOT] Audio initialized");

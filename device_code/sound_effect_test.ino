@@ -1,14 +1,16 @@
 
 // Sound Effect Test (Qualia ESP32-S3)
 //
-// Plays embedded MP3 sound effects from device_code/sounds/*.mp3 via I2S.
+// Plays embedded MP3 sound effects from device_code/sounds/*.mp3.
 //
 // Dependencies (Arduino Library Manager):
 //   - "ESP8266Audio" (works on ESP32 as well)
 //
 // Notes:
-// - You MUST set the I2S speaker pinout below to match your hardware.
-// - This sketch is intentionally standalone (no mic) so I2S is used only for TX.
+// - The Adafruit STEMMA Speaker PID 3885 is an analog/class-D amp, not an I2S
+//   decoder. Use AudioOutputI2SNoDAC so the ESP32-S3 outputs a one-pin
+//   delta-sigma waveform on A0.
+// - This sketch is intentionally standalone (no mic/display) for audio testing.
 
 #include <Arduino.h>
 
@@ -17,28 +19,16 @@
 // ESP8266Audio (ESP32-compatible) headers
 #include <AudioFileSourcePROGMEM.h>
 #include <AudioGeneratorMP3.h>
-#include <AudioOutputI2S.h>
+#include <AudioOutputI2SNoDAC.h>
 
-// ---------------- I2S Speaker Pinout ----------------
-// Set these pins to the pins connected to your I2S speaker amp (e.g., MAX98357A).
-// If you're using a different output method (PWM on A0), this sketch won't apply.
-
-#ifndef I2S_SPK_BCLK
-#define I2S_SPK_BCLK SCK
-#endif
-
-#ifndef I2S_SPK_LRC
-#define I2S_SPK_LRC  MOSI
-#endif
-
-#ifndef I2S_SPK_DOUT
-#define I2S_SPK_DOUT A0
-#endif
+// ---------------- STEMMA Speaker Pinout ----------------
+// Qualia A0 JST SIG -> STEMMA Speaker white wire.
+static const int AUDIO_PIN = A0;
 
 // --------------- Player State ----------------
 static AudioGeneratorMP3* g_mp3 = nullptr;
 static AudioFileSourcePROGMEM* g_src = nullptr;
-static AudioOutputI2S* g_out = nullptr;
+static AudioOutputI2SNoDAC* g_out = nullptr;
 
 static int g_current = 0;
 
@@ -73,8 +63,8 @@ static void play_index(int idx) {
 
 static void print_menu() {
 	Serial.println();
-	Serial.println("=== Sound Effect Test (I2S + embedded MP3) ===");
-	Serial.printf("I2S pinout: BCLK=%d  LRC=%d  DOUT=%d\n", (int)I2S_SPK_BCLK, (int)I2S_SPK_LRC, (int)I2S_SPK_DOUT);
+	Serial.println("=== Sound Effect Test (NoDAC + embedded MP3) ===");
+	Serial.printf("STEMMA speaker signal pin: A0/GPIO %d\n", (int)AUDIO_PIN);
 	Serial.println("Commands:");
 	Serial.println("  n        -> next sound");
 	Serial.println("  p        -> previous sound");
@@ -98,9 +88,10 @@ void setup() {
 		while (true) delay(1000);
 	}
 
-	g_out = new AudioOutputI2S();
-	g_out->SetPinout(I2S_SPK_BCLK, I2S_SPK_LRC, I2S_SPK_DOUT);
-	g_out->SetGain(0.6f); // 0.0 .. 1.0
+	g_out = new AudioOutputI2SNoDAC(AUDIO_PIN);
+	g_out->SetBuffers(8, 2048);
+	g_out->SetOversampling(64);
+	g_out->SetGain(0.10f); // 0.0 .. 1.0
 
 	print_menu();
 	play_index(0);
@@ -140,4 +131,3 @@ void loop() {
 
 	delay(1);
 }
-
