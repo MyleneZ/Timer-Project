@@ -34,11 +34,14 @@ static const uint32_t POST_ROLL_MS = 60;
 static esp_timer_handle_t g_sample_timer = nullptr;
 static const SfxPcm* g_clip = nullptr;
 static volatile size_t g_sample_idx = 0;
+static volatile size_t g_silence_samples_left = 0;
 static volatile bool g_playing = false;
+static volatile bool g_sample_timer_running = false;
 static volatile uint8_t g_volume = 180; // 0..255
 static int g_current = 0;
 static size_t g_pwm_carrier_idx = 0;
 static bool g_pwm_attached = false;
+static bool g_keep_pwm_biased = true;
 
 static uint16_t scale_sample(uint16_t raw) {
 	int centered = (int)raw - (int)PCM_SILENCE;
@@ -70,6 +73,15 @@ static uint16_t apply_envelope(uint16_t sample, size_t idx, size_t len) {
 }
 
 static void sample_tick(void*) {
+	if (g_silence_samples_left > 0) {
+		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		g_silence_samples_left--;
+		if (g_silence_samples_left == 0) {
+			g_playing = false;
+		}
+		return;
+	}
+
 	const SfxPcm* clip = g_clip;
 	size_t idx = g_sample_idx;
 	if (!g_playing || !clip || idx >= clip->len) {
@@ -83,24 +95,33 @@ static void sample_tick(void*) {
 	g_sample_idx = idx + 1;
 }
 
-static void attach_pwm() {
-	if (g_pwm_attached) return;
+static bool attach_pwm() {
+	if (g_pwm_attached) {
+		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		return true;
+	}
 	if (!ledcAttach(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS)) {
-		Serial.println("[SFX] LEDC attach failed.");
-		while (true) delay(1000);
+		Serial.printf("[SFX] LEDC attach failed at %u Hz.\n",
+									(unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
+		return false;
 	}
 	g_pwm_attached = true;
 	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	return true;
 }
 
 static void silence_output() {
 	if (g_pwm_attached) {
 		ledcWrite(AUDIO_PIN, PCM_SILENCE);
 		delay(POST_ROLL_MS);
-		ledcDetach(AUDIO_PIN);
-		g_pwm_attached = false;
+		if (!g_keep_pwm_biased) {
+			ledcDetach(AUDIO_PIN);
+			g_pwm_attached = false;
+		}
 	}
-	pinMode(AUDIO_PIN, INPUT);
+	if (!g_pwm_attached) {
+		pinMode(AUDIO_PIN, INPUT);
+	}
 }
 
 static void stop_playback() {
@@ -108,6 +129,8 @@ static void stop_playback() {
 	if (g_sample_timer) {
 		esp_timer_stop(g_sample_timer);
 	}
+	g_sample_timer_running = false;
+	g_silence_samples_left = 0;
 	silence_output();
 	g_clip = nullptr;
 	g_sample_idx = 0;
@@ -134,7 +157,7 @@ static void play_index(int idx) {
 	g_current = idx;
 
 	stop_playback();
-	attach_pwm();
+	if (!attach_pwm()) return;
 	delay(PRE_ROLL_MS);
 	g_clip = &SFX_PCM_LIST[g_current];
 	g_sample_idx = 0;
@@ -145,7 +168,37 @@ static void play_index(int idx) {
 								(unsigned)g_clip->len, (unsigned)g_clip->sample_rate);
 
 	uint64_t period_us = 1000000ULL / (uint64_t)g_clip->sample_rate;
-	esp_timer_start_periodic(g_sample_timer, period_us);
+	if (esp_timer_start_periodic(g_sample_timer, period_us) == ESP_OK) {
+		g_sample_timer_running = true;
+	} else {
+		g_playing = false;
+		Serial.println("[SFX] Sample timer start failed.");
+	}
+}
+
+static void hold_pwm_silence() {
+	stop_playback();
+	if (!attach_pwm()) return;
+	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	Serial.println("[SFX] Holding plain PWM midpoint silence. Listen for whine; press d to detach.");
+}
+
+static void sampled_silence_test(uint32_t ms) {
+	stop_playback();
+	if (!attach_pwm()) return;
+	g_clip = nullptr;
+	g_sample_idx = 0;
+	g_silence_samples_left = (size_t)((16000UL * ms) / 1000UL);
+	g_playing = true;
+	uint64_t period_us = 1000000ULL / 16000ULL;
+	if (esp_timer_start_periodic(g_sample_timer, period_us) == ESP_OK) {
+		g_sample_timer_running = true;
+		Serial.printf("[SFX] Playing %u ms of timer-driven digital silence.\n", (unsigned)ms);
+	} else {
+		g_playing = false;
+		g_silence_samples_left = 0;
+		Serial.println("[SFX] Sample timer start failed.");
+	}
 }
 
 static void print_menu() {
@@ -160,8 +213,13 @@ static void print_menu() {
 	Serial.println("  s        -> stop");
 	Serial.println("  + / -    -> volume up/down");
 	Serial.println("  f        -> cycle PWM carrier");
+	Serial.println("  m        -> toggle idle mode (biased PWM vs detach)");
+	Serial.println("  h        -> hold plain PWM silence");
+	Serial.println("  t        -> 5 sec timer-driven digital silence");
+	Serial.println("  d        -> detach speaker input");
 	Serial.println("  0..9     -> play index (0-based)");
 	Serial.println("  ?        -> print menu");
+	Serial.printf("Idle mode: %s\n", g_keep_pwm_biased ? "keep 50% PWM bias" : "detach/floating input");
 	Serial.println();
 	Serial.println("Available sounds:");
 	for (size_t i = 0; i < SFX_PCM_COUNT; ++i) {
@@ -200,10 +258,12 @@ void setup() {
 }
 
 void loop() {
-	if (g_clip && !g_playing) {
+	if (g_sample_timer_running && !g_playing) {
 		esp_timer_stop(g_sample_timer);
+		g_sample_timer_running = false;
 		silence_output();
 		g_clip = nullptr;
+		g_silence_samples_left = 0;
 		Serial.println("[SFX] Done.");
 	}
 
@@ -212,6 +272,7 @@ void loop() {
 		int c = Serial.read();
 		if (c < 0) break;
 		if (c == '\n' || c == '\r') continue;
+		if (c >= 'A' && c <= 'Z') c += ('a' - 'A');
 
 		if (c == 'n') {
 			play_index(g_current + 1);
@@ -232,6 +293,22 @@ void loop() {
 			stop_playback();
 			set_pwm_carrier(g_pwm_carrier_idx + 1);
 			if (was_playing) play_index(replay_idx);
+		} else if (c == 'm') {
+			g_keep_pwm_biased = !g_keep_pwm_biased;
+			Serial.printf("[SFX] Idle mode=%s\n",
+										g_keep_pwm_biased ? "keep 50% PWM bias" : "detach/floating input");
+			if (g_keep_pwm_biased) attach_pwm();
+			else silence_output();
+		} else if (c == 'h') {
+			hold_pwm_silence();
+		} else if (c == 't') {
+			sampled_silence_test(5000);
+		} else if (c == 'd') {
+			bool previous = g_keep_pwm_biased;
+			g_keep_pwm_biased = false;
+			stop_playback();
+			g_keep_pwm_biased = previous;
+			Serial.println("[SFX] Detached speaker input.");
 		} else if (c == '?') {
 			print_menu();
 		} else if (c >= '0' && c <= '9') {

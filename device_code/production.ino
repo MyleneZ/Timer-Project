@@ -120,6 +120,7 @@ static uint32_t demo_start_ms = 0;
     static const size_t PCM_FADE_SAMPLES = 384; // 24 ms at 16 kHz
     static const uint32_t PCM_PRE_ROLL_MS = 30;
     static const uint32_t PCM_POST_ROLL_MS = 60;
+    static const bool PCM_KEEP_PWM_BIASED = true;
 
     static esp_timer_handle_t g_sample_timer = nullptr;
     static const SfxPcm* g_pcm_clip = nullptr;
@@ -1545,7 +1546,10 @@ static void pcm_sample_tick(void*) {
 }
 
 static void attach_pcm_pwm() {
-  if (g_pcm_pwm_attached) return;
+  if (g_pcm_pwm_attached) {
+    ledcWrite(AUDIO_PIN, PCM_SILENCE);
+    return;
+  }
   if (!ledcAttach(AUDIO_PIN, PWM_CARRIER_HZ, PWM_RESOLUTION_BITS)) {
     Serial.println("[SFX] PCM PWM attach failed");
     return;
@@ -1560,11 +1564,15 @@ static void silence_pcm_output() {
   if (g_pcm_pwm_attached) {
     ledcWrite(AUDIO_PIN, PCM_SILENCE);
     delay(PCM_POST_ROLL_MS);
-    ledcDetach(AUDIO_PIN);
-    g_pcm_pwm_attached = false;
-    g_pwm_audio_ready = false;
+    if (!PCM_KEEP_PWM_BIASED) {
+      ledcDetach(AUDIO_PIN);
+      g_pcm_pwm_attached = false;
+      g_pwm_audio_ready = false;
+    }
   }
-  pinMode(AUDIO_PIN, INPUT);
+  if (!g_pcm_pwm_attached) {
+    pinMode(AUDIO_PIN, INPUT);
+  }
   g_pcm_clip = nullptr;
   g_pcm_sample_idx = 0;
   sfx_playing = false;
@@ -1685,6 +1693,11 @@ static void play_alarm_tone(bool enable) {
   static uint32_t last_toggle = 0;
   
   if (!enable) {
+    #if USE_PCM_SFX
+    if (g_pcm_pwm_attached) {
+      ledcWrite(AUDIO_PIN, PCM_SILENCE);
+    } else
+    #endif
     if (g_pwm_audio_ready) {
       ledcWriteTone(AUDIO_PIN, 0);
       ledcWrite(AUDIO_PIN, 0);
