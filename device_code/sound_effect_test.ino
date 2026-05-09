@@ -22,10 +22,21 @@
 // ---------------- STEMMA Speaker Pinout ----------------
 // Qualia A0 JST SIG -> STEMMA Speaker white wire.
 static const int AUDIO_PIN = A0;
-static const uint8_t PWM_RESOLUTION_BITS = 9;
 static const uint16_t PCM_SILENCE = 256;
-static const uint32_t PWM_CARRIERS[] = {62500, 78125, 39062, 125000};
-static const size_t PWM_CARRIER_COUNT = sizeof(PWM_CARRIERS) / sizeof(PWM_CARRIERS[0]);
+struct PwmProfile {
+	uint32_t carrier_hz;
+	uint8_t resolution_bits;
+	const char* label;
+};
+static const PwmProfile PWM_PROFILES[] = {
+	{62500, 9, "62.5 kHz / 9-bit fallback"},
+	{78125, 9, "78 kHz / 9-bit"},
+	{39062, 9, "39 kHz / 9-bit"},
+	{125000, 8, "125 kHz / 8-bit experimental"},
+	{156250, 8, "156 kHz / 8-bit experimental"},
+	{200000, 8, "200 kHz / 8-bit experimental"},
+};
+static const size_t PWM_PROFILE_COUNT = sizeof(PWM_PROFILES) / sizeof(PWM_PROFILES[0]);
 static const size_t FADE_SAMPLES = 384; // 24 ms at 16 kHz
 static const uint32_t PRE_ROLL_MS = 30;
 static const uint32_t POST_ROLL_MS = 60;
@@ -39,9 +50,27 @@ static volatile bool g_playing = false;
 static volatile bool g_sample_timer_running = false;
 static volatile uint8_t g_volume = 180; // 0..255
 static int g_current = 0;
-static size_t g_pwm_carrier_idx = 0;
+static size_t g_pwm_profile_idx = 0;
 static bool g_pwm_attached = false;
 static bool g_keep_pwm_biased = true;
+
+static const PwmProfile& current_pwm_profile() {
+	return PWM_PROFILES[g_pwm_profile_idx];
+}
+
+static uint16_t pwm_silence() {
+	return (uint16_t)(1U << (current_pwm_profile().resolution_bits - 1));
+}
+
+static uint16_t pcm9_to_pwm_duty(uint16_t sample9) {
+	uint8_t bits = current_pwm_profile().resolution_bits;
+	if (bits >= 9) return sample9;
+	return (uint16_t)(sample9 >> (9 - bits));
+}
+
+static void write_pwm_sample(uint16_t sample9) {
+	ledcWrite(AUDIO_PIN, pcm9_to_pwm_duty(sample9));
+}
 
 static uint16_t scale_sample(uint16_t raw) {
 	int centered = (int)raw - (int)PCM_SILENCE;
@@ -74,7 +103,7 @@ static uint16_t apply_envelope(uint16_t sample, size_t idx, size_t len) {
 
 static void sample_tick(void*) {
 	if (g_silence_samples_left > 0) {
-		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		write_pwm_sample(PCM_SILENCE);
 		g_silence_samples_left--;
 		if (g_silence_samples_left == 0) {
 			g_playing = false;
@@ -86,33 +115,33 @@ static void sample_tick(void*) {
 	size_t idx = g_sample_idx;
 	if (!g_playing || !clip || idx >= clip->len) {
 		g_playing = false;
-		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		write_pwm_sample(PCM_SILENCE);
 		return;
 	}
 
 	uint16_t raw = pgm_read_word(clip->data + idx);
-	ledcWrite(AUDIO_PIN, apply_envelope(scale_sample(raw), idx, clip->len));
+	write_pwm_sample(apply_envelope(scale_sample(raw), idx, clip->len));
 	g_sample_idx = idx + 1;
 }
 
 static bool attach_pwm() {
 	if (g_pwm_attached) {
-		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		write_pwm_sample(PCM_SILENCE);
 		return true;
 	}
-	if (!ledcAttach(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS)) {
-		Serial.printf("[SFX] LEDC attach failed at %u Hz.\n",
-									(unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
+	const PwmProfile& profile = current_pwm_profile();
+	if (!ledcAttach(AUDIO_PIN, profile.carrier_hz, profile.resolution_bits)) {
+		Serial.printf("[SFX] LEDC attach failed for %s.\n", profile.label);
 		return false;
 	}
 	g_pwm_attached = true;
-	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	write_pwm_sample(PCM_SILENCE);
 	return true;
 }
 
 static void silence_output() {
 	if (g_pwm_attached) {
-		ledcWrite(AUDIO_PIN, PCM_SILENCE);
+		write_pwm_sample(PCM_SILENCE);
 		delay(POST_ROLL_MS);
 		if (!g_keep_pwm_biased) {
 			ledcDetach(AUDIO_PIN);
@@ -136,18 +165,17 @@ static void stop_playback() {
 	g_sample_idx = 0;
 }
 
-static void set_pwm_carrier(size_t idx) {
-	if (idx >= PWM_CARRIER_COUNT) idx = 0;
-	g_pwm_carrier_idx = idx;
+static void set_pwm_profile(size_t idx) {
+	if (idx >= PWM_PROFILE_COUNT) idx = 0;
+	g_pwm_profile_idx = idx;
 	if (g_pwm_attached) {
-		uint32_t actual = ledcChangeFrequency(AUDIO_PIN, PWM_CARRIERS[g_pwm_carrier_idx], PWM_RESOLUTION_BITS);
-		ledcWrite(AUDIO_PIN, PCM_SILENCE);
-		Serial.printf("[SFX] PWM carrier requested=%u Hz actual=%u Hz\n",
-									(unsigned)PWM_CARRIERS[g_pwm_carrier_idx], (unsigned)actual);
+		ledcDetach(AUDIO_PIN);
+		g_pwm_attached = false;
+		if (!attach_pwm()) return;
+		Serial.printf("[SFX] PWM profile: %s\n", current_pwm_profile().label);
 		return;
 	}
-	Serial.printf("[SFX] PWM carrier requested=%u Hz actual=%u Hz\n",
-								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx], 0U);
+	Serial.printf("[SFX] PWM profile: %s\n", current_pwm_profile().label);
 }
 
 static void play_index(int idx) {
@@ -179,7 +207,7 @@ static void play_index(int idx) {
 static void hold_pwm_silence() {
 	stop_playback();
 	if (!attach_pwm()) return;
-	ledcWrite(AUDIO_PIN, PCM_SILENCE);
+	write_pwm_sample(PCM_SILENCE);
 	Serial.println("[SFX] Holding plain PWM midpoint silence. Listen for whine; press d to detach.");
 }
 
@@ -205,14 +233,14 @@ static void print_menu() {
 	Serial.println();
 	Serial.println("=== Sound Effect Test (PWM PCM on STEMMA speaker) ===");
 	Serial.printf("STEMMA speaker signal pin: A0/GPIO %d\n", (int)AUDIO_PIN);
-	Serial.printf("PWM carrier: %u Hz, PCM: 16000 Hz mono unsigned 9-bit\n",
-								(unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
+	Serial.printf("PWM profile: %s, PCM source: 16000 Hz mono unsigned 9-bit\n",
+								current_pwm_profile().label);
 	Serial.println("Commands:");
 	Serial.println("  n        -> next sound");
 	Serial.println("  p        -> previous sound");
 	Serial.println("  s        -> stop");
 	Serial.println("  + / -    -> volume up/down");
-	Serial.println("  f        -> cycle PWM carrier");
+	Serial.println("  f        -> cycle PWM profile");
 	Serial.println("  m        -> toggle idle mode (biased PWM vs detach)");
 	Serial.println("  h        -> hold plain PWM silence");
 	Serial.println("  t        -> 5 sec timer-driven digital silence");
@@ -238,7 +266,7 @@ void setup() {
 	}
 
 	Serial.printf("[SFX] Serial baud: 115200\n");
-	Serial.printf("[SFX] Initial PWM carrier: %u Hz\n", (unsigned)PWM_CARRIERS[g_pwm_carrier_idx]);
+	Serial.printf("[SFX] Initial PWM profile: %s\n", current_pwm_profile().label);
 	silence_output();
 
 	const esp_timer_create_args_t timer_args = {
@@ -291,7 +319,7 @@ void loop() {
 			bool was_playing = g_playing;
 			int replay_idx = g_current;
 			stop_playback();
-			set_pwm_carrier(g_pwm_carrier_idx + 1);
+			set_pwm_profile(g_pwm_profile_idx + 1);
 			if (was_playing) play_index(replay_idx);
 		} else if (c == 'm') {
 			g_keep_pwm_biased = !g_keep_pwm_biased;

@@ -1531,23 +1531,32 @@ static uint16_t apply_pcm_envelope(uint16_t sample, size_t idx, size_t len) {
   return (uint16_t)shaped;
 }
 
+static uint16_t pcm_to_pwm_duty(uint16_t sample) {
+  if (PWM_RESOLUTION_BITS >= 9) return sample;
+  return (uint16_t)(sample >> (9 - PWM_RESOLUTION_BITS));
+}
+
+static void write_pcm_pwm(uint16_t sample) {
+  ledcWrite(AUDIO_PIN, pcm_to_pwm_duty(sample));
+}
+
 static void pcm_sample_tick(void*) {
   const SfxPcm* clip = g_pcm_clip;
   size_t idx = g_pcm_sample_idx;
   if (!sfx_playing || !clip || idx >= clip->len) {
     sfx_playing = false;
-    ledcWrite(AUDIO_PIN, PCM_SILENCE);
+    write_pcm_pwm(PCM_SILENCE);
     return;
   }
 
   uint16_t raw = pgm_read_word(clip->data + idx);
-  ledcWrite(AUDIO_PIN, apply_pcm_envelope(scale_pcm_sample(raw), idx, clip->len));
+  write_pcm_pwm(apply_pcm_envelope(scale_pcm_sample(raw), idx, clip->len));
   g_pcm_sample_idx = idx + 1;
 }
 
 static void attach_pcm_pwm() {
   if (g_pcm_pwm_attached) {
-    ledcWrite(AUDIO_PIN, PCM_SILENCE);
+    write_pcm_pwm(PCM_SILENCE);
     return;
   }
   if (!ledcAttach(AUDIO_PIN, PWM_CARRIER_HZ, PWM_RESOLUTION_BITS)) {
@@ -1556,13 +1565,13 @@ static void attach_pcm_pwm() {
   }
   g_pwm_audio_ready = true;
   g_pcm_pwm_attached = true;
-  ledcWrite(AUDIO_PIN, PCM_SILENCE);
+  write_pcm_pwm(PCM_SILENCE);
 }
 
 static void silence_pcm_output() {
   if (g_sample_timer) esp_timer_stop(g_sample_timer);
   if (g_pcm_pwm_attached) {
-    ledcWrite(AUDIO_PIN, PCM_SILENCE);
+    write_pcm_pwm(PCM_SILENCE);
     delay(PCM_POST_ROLL_MS);
     if (!PCM_KEEP_PWM_BIASED) {
       ledcDetach(AUDIO_PIN);
@@ -1695,7 +1704,7 @@ static void play_alarm_tone(bool enable) {
   if (!enable) {
     #if USE_PCM_SFX
     if (g_pcm_pwm_attached) {
-      ledcWrite(AUDIO_PIN, PCM_SILENCE);
+      write_pcm_pwm(PCM_SILENCE);
     } else
     #endif
     if (g_pwm_audio_ready) {
