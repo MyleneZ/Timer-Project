@@ -393,7 +393,7 @@ static void clear_idle_border_band() {
 
 // ======================= TIMER STATE =======================
 #define MAX_TIMERS 3
-#define ALARM_DURATION_MS 90000  // 90 seconds auto-shutoff
+#define ALARM_DURATION_MS 8000   // Clear finished timers after the alarm clip ends.
 #define NO_TIMER_DISPLAY_SLEEP_DELAY_MS 180000UL  // 3 minutes
 
 struct Timer {
@@ -2247,21 +2247,15 @@ static void draw_panel_backdrop(const PanelLayout& layout, const TimerTheme& the
 static void draw_timer_ring(const PanelLayout& layout, const Timer& timer, float frac, uint32_t now) {
   #if USE_RING
   TimerTheme theme = resolved_theme_for_timer(timer);
-  bool flash = ((now / 250) % 2) == 0;
-  uint16_t ring_start = timer.ringing
-    ? (flash ? COLOR_ALERT_START : lerp565(COLOR_ALERT_START, COLOR_ALERT_ORANGE, 80))
-    : theme.ring_start;
-  uint16_t ring_end = timer.ringing
-    ? (flash ? COLOR_ALERT_RED : COLOR_ALERT_ORANGE)
-    : theme.ring_end;
-  uint16_t ring_empty = timer.ringing
-    ? lerp565(theme.ring_empty, COLOR_ALERT_ORANGE, 80)
-    : theme.ring_empty;
-  float draw_frac = timer.ringing ? (flash ? 0.04f : 0.12f) : frac;
+  uint16_t ring_start = theme.ring_start;
+  uint16_t ring_end = theme.ring_end;
+  uint16_t ring_empty = theme.ring_empty;
+  float draw_frac = timer.ringing ? 0.0f : frac;
+  uint8_t caps = timer.ringing ? CAP_NONE : CAP_LEAD;
   int ring_size = ring_size_px(layout.ring_scale);
 
   ensure_ring_lut(layout.ring_scale);
-  draw_ring(draw_frac, CAP_LEAD, ring_start, ring_end, ring_empty,
+  draw_ring(draw_frac, caps, ring_start, ring_end, ring_empty,
             layout.ring_cx - ring_size / 2,
             layout.ring_cy - ring_size / 2,
             theme.bg, layout.ring_scale);
