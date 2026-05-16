@@ -394,6 +394,7 @@ static void clear_idle_border_band() {
 // ======================= TIMER STATE =======================
 #define MAX_TIMERS 3
 #define ALARM_DURATION_MS 90000  // 90 seconds auto-shutoff
+#define NO_TIMER_DISPLAY_SLEEP_DELAY_MS 180000UL  // 3 minutes
 
 struct Timer {
   char name[16];
@@ -1774,6 +1775,7 @@ static ParsedCommand parseCommand(const std::string& msg) {
 
 void processVoiceCommand(ParsedCommand& cmd);  // Forward declaration
 static void requestFullRedraw();               // Forward declaration
+static void wakeDisplayForCommand();           // Forward declaration
 
 // ======================= BLE FOR NICLA VOICE =======================
 #if USE_BLE
@@ -1945,6 +1947,10 @@ static void stopAllAlarms() {
 // ======================= VOICE COMMAND PROCESSING =======================
 // Moved outside USE_BLE to support both BLE and Demo modes
 void processVoiceCommand(ParsedCommand& cmd) {
+  if (cmd.cmd == CMD_NONE) return;
+
+  wakeDisplayForCommand();
+
   switch (cmd.cmd) {
     case CMD_SET:
       createTimer(cmd.name, cmd.duration);
@@ -2416,6 +2422,8 @@ static bool needs_visual_redraw = false;
 static bool needs_time_redraw = false;
 static bool needs_art_redraw = false;
 static bool full_redraw_resets_timebase = true;
+static bool display_awake = true;
+static uint32_t no_timer_screen_started_ms = 0;
 
 static void requestFullRedraw() {
   needs_full_redraw = true;
@@ -2435,6 +2443,33 @@ static void requestTimeRedraw() {
 
 static void requestArtRedraw() {
   needs_art_redraw = true;
+}
+
+static void setDisplayAwake(bool awake) {
+  if (display_awake == awake) return;
+  display_awake = awake;
+  expander->digitalWrite(PCA_TFT_BACKLIGHT, awake ? HIGH : LOW);
+  Serial.printf("[DISPLAY] %s\n", awake ? "Awake" : "Sleeping");
+}
+
+static void wakeDisplay(uint32_t now) {
+  setDisplayAwake(true);
+  no_timer_screen_started_ms = now;
+  requestFullRedraw();
+}
+
+static void wakeDisplayForCommand() {
+  wakeDisplay(millis());
+}
+
+static void sleepDisplayIfIdle(uint32_t now) {
+  if (active_timer_count != 0 || !display_awake) return;
+  if (now - no_timer_screen_started_ms < NO_TIMER_DISPLAY_SLEEP_DELAY_MS) return;
+
+  setDisplayAwake(false);
+  needs_visual_redraw = false;
+  needs_art_redraw = false;
+  needs_time_redraw = false;
 }
 
 // ======================= MAIN SETUP =======================
@@ -2561,6 +2596,7 @@ void setup() {
   last_second_ms = millis();
   last_ring_ms = millis();
   last_idle_anim_ms = millis();
+  no_timer_screen_started_ms = millis();
   
   Serial.println("[BOOT] Ready!");
   
@@ -2645,6 +2681,11 @@ void loop() {
   static int last_active_count = 0;
   if (active_timer_count != last_active_count) {
     last_active_count = active_timer_count;
+    if (active_timer_count == 0) {
+      no_timer_screen_started_ms = now;
+    } else {
+      setDisplayAwake(true);
+    }
     requestFullRedraw();
   }
 
@@ -2655,13 +2696,13 @@ void loop() {
   #endif
 
   const uint32_t IDLE_FRAME_DT = 80;
-  if (active_timer_count == 0 && !needs_full_redraw && now - last_idle_anim_ms >= IDLE_FRAME_DT) {
+  if (active_timer_count == 0 && display_awake && !needs_full_redraw && now - last_idle_anim_ms >= IDLE_FRAME_DT) {
     last_idle_anim_ms = now;
     requestVisualRedraw();
   }
   
   // Full redraw if needed
-  if (needs_full_redraw) {
+  if (display_awake && needs_full_redraw) {
     bool redraw_resets_timebase = full_redraw_resets_timebase;
     needs_full_redraw = false;
     needs_visual_redraw = false;
@@ -2673,7 +2714,7 @@ void loop() {
       last_second_ms = now;
       last_ring_ms = now;
     }
-  } else {
+  } else if (display_awake) {
     if (needs_visual_redraw) {
       needs_visual_redraw = false;
       if (active_timer_count == 0) {
@@ -2695,7 +2736,14 @@ void loop() {
       needs_art_redraw = false;
       needs_time_redraw = false;
     }
+  } else {
+    needs_full_redraw = false;
+    needs_visual_redraw = false;
+    needs_time_redraw = false;
+    needs_art_redraw = false;
   }
+
+  sleepDisplayIfIdle(now);
   
   // === Update countdown once per second ===
   bool layout_changed = false;
