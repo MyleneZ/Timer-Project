@@ -1,5 +1,14 @@
 # Timer-Project
 
+Voice input runs on a Raspberry Pi 4, not the Nicla Voice. The NDP120 could not
+carry the full command grammar reliably, so dictation moved to the Pi, which
+connects to the Qualia as a BLE central and writes the same command strings the
+Nicla used. See `rpi_bridge/` for that code and its deployment steps.
+
+- `device_code/production.ino`  - Qualia firmware (display, audio, timer logic)
+- `rpi_bridge/`                 - Raspberry Pi dictation + command bridge
+- `device_code/production_nicla.ino` - superseded by rpi_bridge, kept for reference
+
 Interaction Notes:
 - player sounds in response to commands
 
@@ -116,10 +125,10 @@ python3 generate_kws_template.py --wavs wavs --out kws_templates.h
         - [X] 1-3 timer support
         - [X] colored timer rings
     - [ ] Interactions
-        - [-] Speech Recognition
-            - Continue adding to the dataset
-            - Check conf thresholds
-            - *RPi companion system concept
+        - [X] Speech Recognition
+            - Moved off the Nicla to the RPi 4 (see rpi_bridge/)
+            - Vosk, grammar-constrained to the command vocabulary, fully offline
+            - Tune [asr] min_confidence against a real speaker using transcript_log
         - [-] Sound Effects
             - Alarm
             - Confirm Tone

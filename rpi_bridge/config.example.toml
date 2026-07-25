@@ -1,0 +1,109 @@
+# Tivvy RPi voice bridge configuration.
+# Copy to /etc/tivvy/bridge.toml (or anywhere) and pass with --config.
+# Every value below is a default; delete anything you do not need to change.
+
+log_level = "INFO"
+
+# Ignore an identical command repeated inside this window. This is what stops
+# the Qualia's own alarm audio (or a stutter) from firing a command twice.
+duplicate_window_s = 2.5
+
+# Append every utterance + parse outcome here. Very useful when tuning the
+# vocabulary against a real speaker; comment out for normal running.
+transcript_log = "/var/log/tivvy/transcripts.log"
+
+
+[audio]
+# Index or name substring from `python -m tivvy_bridge --list-audio`.
+# Leave unset to use the PortAudio default input.
+# device = "USB PnP Sound Device"
+samplerate = 16000
+frame_ms = 20
+channels = 1
+gain = 1.0
+
+
+[vad]
+# "webrtc" is better; "energy" needs no compiled dependency.
+backend = "webrtc"
+aggressiveness = 2      # 0 permissive .. 3 aggressive
+start_frames = 4        # 80 ms of speech opens an utterance
+end_silence_ms = 700    # silence that closes it
+preroll_ms = 320        # audio kept from before the trigger
+min_utterance_ms = 400
+max_utterance_ms = 8000
+energy_margin_db = 9.0  # energy backend only
+
+
+[asr]
+backend = "vosk"
+model_path = "/opt/tivvy/models/vosk-model-small-en-us-0.15"
+
+# Restrict the decoder to the Tivvy vocabulary. This is the single biggest
+# accuracy win on a Pi 4 - only turn it off to experiment.
+use_grammar = true
+
+# Utterances below this mean word confidence are discarded. Raise it if the
+# device acts on background conversation; lower it if it ignores the user.
+min_confidence = 0.55
+
+# Only used when backend = "whisper".
+whisper_model = "tiny.en"
+whisper_compute_type = "int8"
+whisper_beam_size = 1
+
+
+[wake]
+# Off by default: the grammar-constrained decoder plus the NLU's requirement
+# for a real command word already reject most background speech.
+enabled = false
+phrases = ["tivvy", "hey tivvy"]
+follow_up_window_s = 6.0
+
+
+[nlu]
+# Seconds to use for "set a baking timer" with no duration.
+# 0 = reject the command. A misheard duration is worse than no timer at all.
+set_without_duration_seconds = 0
+
+# "set baking for twenty" with no unit is read as twenty of these seconds.
+bare_number_unit_seconds = 60
+
+# "add time to baking" with no amount.
+adjust_without_duration_seconds = 60
+
+# Fuzzy match threshold for recovering a timer name from an ASR slip.
+name_fuzzy_cutoff = 0.82
+max_words = 24
+
+
+[link]
+# "ble"    - Qualia keeps its Nordic UART peripheral role. No firmware protocol
+#            change needed; this is the drop-in Nicla replacement.
+# "serial" - USB CDC to the Qualia. Needs the firmware serial-handler change
+#            described in the README audit section.
+# "stdout" - dry run, prints commands.
+transport = "ble"
+
+device_name = "TimerDevice"
+
+# Strongly recommended once you know it: run `python -m tivvy_bridge --scan-ble`
+# and paste the Qualia's address here. Pinning the address removes any
+# dependence on the device name surviving into the BLE advertisement.
+# device_address = "AA:BB:CC:DD:EE:FF"
+
+# adapter = "hci0"
+scan_timeout_s = 12.0
+
+# Keep true: write-with-response lets BlueZ split a long command across ATT
+# packets, so a small negotiated MTU cannot truncate a command.
+write_with_response = true
+subscribe_notifications = true
+
+serial_port = "/dev/ttyACM0"
+serial_baud = 115200
+
+reconnect_min_s = 1.0
+reconnect_max_s = 20.0
+send_timeout_s = 5.0
+stale_command_s = 8.0

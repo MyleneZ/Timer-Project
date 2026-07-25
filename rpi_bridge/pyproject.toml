@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tivvy-bridge"
+version = "1.0.0"
+description = "Raspberry Pi voice bridge for the Tivvy timer display"
+requires-python = ">=3.11"
+dependencies = [
+    "sounddevice>=0.4.6",
+    "vosk>=0.3.45",
+    "bleak>=0.22.0",
+    "webrtcvad-wheels>=2.0.14",
+]
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]
+whisper = ["faster-whisper>=1.0.0", "numpy>=1.24"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+tivvy-bridge = "tivvy_bridge.__main__:main"
+
+[tool.setuptools]
+packages = ["tivvy_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,16 @@
+# Core runtime for the Raspberry Pi 4 bridge.
+# System packages needed first:
+#   sudo apt install -y python3-venv python3-dev libportaudio2 portaudio19-dev \
+#                       bluez unzip
+
+sounddevice>=0.4.6      # microphone capture via PortAudio
+vosk>=0.3.45            # offline speech recognition (default backend)
+bleak>=0.22.0           # BLE central, talks to the Qualia's NUS peripheral
+webrtcvad-wheels>=2.0.14  # voice activity detection (prebuilt wheels for ARM)
+
+# Optional: only needed for [link] transport = "serial"
+pyserial>=3.5
+
+# Optional: only needed for [asr] backend = "whisper"
+# faster-whisper>=1.0.0
+# numpy>=1.24

@@ -1,0 +1,36 @@
+[Unit]
+Description=Tivvy voice bridge (Raspberry Pi -> Qualia timer display)
+Documentation=file:/opt/tivvy/bridge/README.md
+After=network.target sound.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=tivvy
+Group=tivvy
+# audio: microphone access; bluetooth: BLE central role
+SupplementaryGroups=audio bluetooth dialout
+
+WorkingDirectory=/opt/tivvy/bridge
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/tivvy/venv/bin/python -m tivvy_bridge --config /etc/tivvy/bridge.toml
+
+Restart=always
+RestartSec=5
+# Give up and let the watchdog surface the failure if it flaps hard.
+StartLimitBurst=10
+StartLimitIntervalSec=120
+
+# The bridge only needs its model, its config and the audio/BT devices.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/log/tivvy
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tivvy-bridge
+
+[Install]
+WantedBy=multi-user.target

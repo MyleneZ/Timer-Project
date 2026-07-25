@@ -1,0 +1,43 @@
+# macOS smoke-test config. Not for the Pi — see config.example.toml for that.
+#
+#   .venv/bin/python -m tivvy_bridge --config bridge.mac.toml --check
+#   .venv/bin/python -m tivvy_bridge --config bridge.mac.toml            # live mic
+#
+# Differences from the Pi config:
+#   * model_path points at ~/tivvy-models (no /opt/tivvy on a Mac)
+#   * transcript_log is under ~ (no /var/log/tivvy)
+#   * transport defaults to stdout so a smoke test never needs the Qualia;
+#     switch to "ble" (or pass --transport ble) once the display is powered on.
+
+log_level = "INFO"
+duplicate_window_s = 2.5
+transcript_log = "~/tivvy-transcripts.log"
+
+[audio]
+# Built-in mic is fine for a smoke test; a USB mic is what ships on the Pi.
+# device = "MacBook Pro Microphone"
+samplerate = 16000
+frame_ms = 20
+channels = 1
+gain = 1.0
+
+[vad]
+backend = "webrtc"
+aggressiveness = 2
+start_frames = 4
+end_silence_ms = 700
+preroll_ms = 320
+
+[asr]
+backend = "vosk"
+model_path = "~/tivvy-models/vosk-model-small-en-us-0.15"
+use_grammar = true
+min_confidence = 0.55
+
+[wake]
+enabled = false
+
+[link]
+transport = "stdout"
+device_name = "TimerDevice"
+scan_timeout_s = 12.0

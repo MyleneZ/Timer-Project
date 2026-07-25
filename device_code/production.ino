@@ -4,15 +4,20 @@
  * Hardware:
  *   - Qualia ESP32-S3 RGB666
  *   - HD458002C40 4.58" 320x960 RGB TTL TFT Display
- *   - SPH0645 I2S MEMS Microphone
+ *   - SPH0645 I2S MEMS Microphone (unused; see USE_MIC)
  *   - Adafruit STEMMA Speaker (via JST on A0)
- *   - Nicla Voice (BLE communication for voice commands)
- * 
+ *   - Raspberry Pi 4 voice bridge (BLE central; see rpi_bridge/)
+ *
+ * Voice input:
+ *   Dictation runs on the Pi, which connects to this board as a BLE central
+ *   and writes command strings to the Nordic UART RX characteristic. This board
+ *   answers on the TX characteristic with ACK: and STATE: lines so the Pi can
+ *   mirror real device state instead of guessing.
+ *
  * Features:
  *   - Up to 3 concurrent timers with visual countdown rings
  *   - Animated activity GIFs for the timer art
- *   - BLE communication with Nicla Voice for voice commands
- *   - Sound effects for feedback (bootup, confirm, cancel, alarm)
+ *   - Sound effects for feedback (bootup, confirm, cancel, error, alarm)
  *   - Voice commands: Set, Cancel, Add, Minus, Stop
  */
 #include <stdint.h>
@@ -45,11 +50,11 @@ struct PanelLayout;
 #include <NimBLEDevice.h>
 
 // ======================= FEATURE FLAGS =======================
-#define USE_MIC       0   // Disable local mic (using Nicla Voice instead)
+#define USE_MIC       0   // Disable local mic (dictation runs on the Raspberry Pi)
 #define USE_RING      1   // Enable ring animation
 #define USE_GIFS      1   // Re-enable GIFs; rely on auto-flush framebuffer updates
 #define USE_SPEAKER   1   // Enable speaker output
-#define USE_BLE       1   // Enable BLE for Nicla Voice communication
+#define USE_BLE       1   // Enable BLE for the Raspberry Pi voice bridge
 
 // The JST STEMMA speaker amp is wired as a single analog input on A0, not a
 // full external I2S DAC. Use pre-decoded PCM over LEDC PWM for sound effects.
@@ -68,9 +73,10 @@ static float g_sfx_gain = 0.70f;  // 0.0 .. 1.0
 static uint8_t g_pwm_duty = 32;
 
 // ======================= DEMO MODE =======================
-// Set to true to simulate Nicla Voice commands for demonstration
-// When false, operates normally waiting for BLE commands from Nicla Voice
-static const bool INDEPENDENT_DEMO = true;
+// Set to true to run the canned command queue below for an unattended demo.
+// MUST stay false in normal operation: the queue creates and cancels timers on
+// its own schedule and will fight commands coming from the Raspberry Pi.
+static const bool INDEPENDENT_DEMO = false;
 
 // Demo command structure - defines what command to run and when
 struct DemoCommand {
@@ -393,6 +399,7 @@ static void clear_idle_border_band() {
 
 // ======================= TIMER STATE =======================
 #define MAX_TIMERS 3
+#define MAX_TIMER_SECONDS 86400UL  // 24 h ceiling on any single timer.
 #define ALARM_DURATION_MS 8000   // Clear finished timers after the alarm clip ends.
 #define NO_TIMER_DISPLAY_SLEEP_DELAY_MS 180000UL  // 3 minutes
 
@@ -1448,7 +1455,8 @@ enum SfxId {
   SFX_CONFIRM = 1,
   SFX_PAUSE = 2,
   SFX_RESUME = 3,
-  SFX_ALARM = 4
+  SFX_ALARM = 4,
+  SFX_ERROR = 5   // Command heard but refused (unknown name, slots full, ...)
 };
 
 static volatile bool sfx_playing = false;
@@ -1474,6 +1482,11 @@ static const BeepStep SFX_RES[] = {
 static const BeepStep SFX_ALARM_BEEP[] = {
   { 880, 140 }, { 0, 110 }, { 988, 140 }, { 0, 110 }, { 0, 0 }
 };
+// Low descending buzz: deliberately unlike SFX_OK so "misheard you" and
+// "heard you and refused" are distinguishable by ear.
+static const BeepStep SFX_ERR[] = {
+  { 392, 110 }, { 0, 40 }, { 294, 160 }, { 0, 0 }
+};
 
 static const BeepStep* g_beep_steps = nullptr;
 static uint8_t g_beep_idx = 0;
@@ -1495,6 +1508,12 @@ static const SfxPcm* sfx_pcm_for_id(int idx) {
     case SFX_PAUSE:    return find_sfx_pcm("pause");
     case SFX_RESUME:   return find_sfx_pcm("resume");
     case SFX_ALARM:    return find_sfx_pcm("alarm");
+    case SFX_ERROR: {
+      // Drop an error.mp3 into sounds/ and re-run generate_sfx_pcm_header.js to
+      // give refusals their own clip; until then they share the cancel tone.
+      const SfxPcm* clip = find_sfx_pcm("error");
+      return clip ? clip : find_sfx_pcm("pause");
+    }
     default:           return nullptr;
   }
 }
@@ -1651,6 +1670,7 @@ static void sfx_play(int idx) {
     case SFX_PAUSE: steps = SFX_CANCEL; break;
     case SFX_RESUME: steps = SFX_RES; break;
     case SFX_ALARM: steps = SFX_ALARM_BEEP; break;
+    case SFX_ERROR: steps = SFX_ERR; break;
     default: steps = SFX_OK; break;
   }
   g_beep_steps = steps;
@@ -1777,7 +1797,49 @@ void processVoiceCommand(ParsedCommand& cmd);  // Forward declaration
 static void requestFullRedraw();               // Forward declaration
 static void wakeDisplayForCommand();           // Forward declaration
 
-// ======================= BLE FOR NICLA VOICE =======================
+// ======================= COMMAND INBOX =======================
+// BLE writes are delivered on the NimBLE host task. Acting on them there would
+// touch timers[], the I2C backlight expander and the audio path concurrently
+// with loop(), so the callback only enqueues the raw string and loop() drains
+// the queue on its own task. Single producer (BLE), single consumer (loop).
+#define CMD_INBOX_SLOTS   8
+#define CMD_INBOX_MSG_LEN 80
+
+static char g_cmd_inbox[CMD_INBOX_SLOTS][CMD_INBOX_MSG_LEN];
+static volatile uint8_t g_cmd_head = 0;
+static volatile uint8_t g_cmd_tail = 0;
+static portMUX_TYPE g_cmd_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool inbox_push(const char* msg) {
+  if (msg == nullptr || msg[0] == '\0') return false;
+
+  bool queued = false;
+  portENTER_CRITICAL(&g_cmd_mux);
+  uint8_t next = (uint8_t)((g_cmd_head + 1) % CMD_INBOX_SLOTS);
+  if (next != g_cmd_tail) {
+    strncpy(g_cmd_inbox[g_cmd_head], msg, CMD_INBOX_MSG_LEN - 1);
+    g_cmd_inbox[g_cmd_head][CMD_INBOX_MSG_LEN - 1] = '\0';
+    g_cmd_head = next;
+    queued = true;
+  }
+  portEXIT_CRITICAL(&g_cmd_mux);
+  return queued;
+}
+
+static bool inbox_pop(char* out, size_t out_len) {
+  bool popped = false;
+  portENTER_CRITICAL(&g_cmd_mux);
+  if (g_cmd_tail != g_cmd_head) {
+    strncpy(out, g_cmd_inbox[g_cmd_tail], out_len - 1);
+    out[out_len - 1] = '\0';
+    g_cmd_tail = (uint8_t)((g_cmd_tail + 1) % CMD_INBOX_SLOTS);
+    popped = true;
+  }
+  portEXIT_CRITICAL(&g_cmd_mux);
+  return popped;
+}
+
+// ======================= BLE FOR THE RASPBERRY PI BRIDGE =======================
 #if USE_BLE
 NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* rxChar = nullptr;
@@ -1800,20 +1862,46 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
     std::string value = pCharacteristic->getValue();
-    if (value.length() > 0) {
-      Serial.printf("[BLE] Received: %s\n", value.c_str());
-      
-      ParsedCommand cmd = parseCommand(value);
-      processVoiceCommand(cmd);
+    if (value.empty()) return;
+
+    Serial.printf("[BLE] Received: %s\n", value.c_str());
+
+    // Do NOT act on the command here - this runs on the NimBLE host task.
+    // Hand it to loop() via the inbox instead.
+    if (!inbox_push(value.c_str())) {
+      Serial.println("[BLE] Command inbox full; dropped");
     }
   }
 };
 #endif
 
+// Send a status line back to the Raspberry Pi on the NUS TX characteristic.
+// Safe to call with BLE disabled or nothing connected; it still logs to serial,
+// which is what the USB-serial transport reads.
+static void notifyDevice(const char* line) {
+  if (line == nullptr) return;
+  #if USE_BLE
+  if (txChar != nullptr && deviceConnected) {
+    txChar->setValue((const uint8_t*)line, strlen(line));
+    txChar->notify();
+  }
+  #endif
+  Serial.printf("[TX] %s\n", line);
+}
+
+// Set whenever the timer set changes; flushed once per loop() so a burst of
+// changes produces a single STATE line.
+static bool g_state_dirty = false;
+static inline void markStateDirty() { g_state_dirty = true; }
+
 // ======================= TIMER MANAGEMENT =======================
+// Case-insensitive on purpose: speech recognition upstream has no reliable
+// notion of capitalisation, and a case mismatch here silently turns every
+// cancel/add/minus into a no-op.
 static int findTimerByName(const char* name) {
+  if (name == nullptr || name[0] == '\0') return -1;
   for (int i = 0; i < MAX_TIMERS; i++) {
-    if (timers[i].active && strcmp(timers[i].name, name) == 0) {
+    if (timers[i].active && name_equals_ignore_case(timers[i].name, name)) {
       return i;
     }
   }
@@ -1837,14 +1925,50 @@ static void updateActiveCount() {
 }
 
 static bool createTimer(const char* name, uint32_t duration_seconds) {
-  if (active_timer_count >= MAX_TIMERS) {
-    Serial.println("[TIMER] Max timers reached");
+  if (name == nullptr || name[0] == '\0') {
+    Serial.println("[TIMER] Rejected: empty name");
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
     return false;
   }
-  
+
+  // A zero-second timer is never counted down and never rings, so it would
+  // hold its slot until reboot. Refuse it outright.
+  if (duration_seconds == 0) {
+    Serial.printf("[TIMER] Rejected: %s has zero duration\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+  if (duration_seconds > MAX_TIMER_SECONDS) {
+    Serial.printf("[TIMER] Clamping %s to %lu seconds\n",
+                  name, (unsigned long)MAX_TIMER_SECONDS);
+    duration_seconds = MAX_TIMER_SECONDS;
+  }
+
+  // Duplicate names are unaddressable: findTimerByName only ever returns the
+  // first match, so the second copy could never be cancelled or adjusted.
+  if (findTimerByName(name) >= 0) {
+    Serial.printf("[TIMER] Rejected: %s already exists\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+
+  if (active_timer_count >= MAX_TIMERS) {
+    Serial.println("[TIMER] Max timers reached");
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+
   int slot = findFreeTimerSlot();
   if (slot < 0) return false;
-  
+
   strncpy(timers[slot].name, name, 15);
   timers[slot].name[15] = '\0';
   timers[slot].total_seconds = duration_seconds;
@@ -1868,6 +1992,9 @@ static bool cancelTimer(const char* name) {
   int idx = findTimerByName(name);
   if (idx < 0) {
     Serial.printf("[TIMER] Not found: %s\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
     return false;
   }
   
@@ -1887,13 +2014,44 @@ static bool cancelTimer(const char* name) {
 
 static bool addTimeToTimer(const char* name, uint32_t seconds) {
   int idx = findTimerByName(name);
-  if (idx < 0) return false;
-  
+  if (idx < 0) {
+    Serial.printf("[TIMER] Not found: %s\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+  if (seconds == 0) {
+    Serial.printf("[TIMER] Rejected: zero add on %s\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+
+  // Clamp against the ceiling. Computed as headroom rather than
+  // (MAX - seconds) so a large `seconds` cannot wrap the unsigned subtraction.
+  uint32_t headroom = (timers[idx].seconds_left >= MAX_TIMER_SECONDS)
+                        ? 0
+                        : (MAX_TIMER_SECONDS - timers[idx].seconds_left);
+  if (seconds > headroom) seconds = headroom;
+  if (seconds == 0) {
+    Serial.printf("[TIMER] %s is already at the %lu second ceiling\n",
+                  name, (unsigned long)MAX_TIMER_SECONDS);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+
   timers[idx].seconds_left += seconds;
   timers[idx].total_seconds += seconds;
-  
+
   if (timers[idx].ringing) {
     timers[idx].ringing = false;  // Stop alarm if adding time
+    #if USE_SPEAKER
+    play_alarm_tone(false);
+    #endif
   }
   requestFullRedraw();
   
@@ -1908,68 +2066,138 @@ static bool addTimeToTimer(const char* name, uint32_t seconds) {
 
 static bool subtractTimeFromTimer(const char* name, uint32_t seconds) {
   int idx = findTimerByName(name);
-  if (idx < 0) return false;
-  
-  if (seconds >= timers[idx].seconds_left) {
-    timers[idx].seconds_left = 0;
-  } else {
-    timers[idx].seconds_left -= seconds;
+  if (idx < 0) {
+    Serial.printf("[TIMER] Not found: %s\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
   }
+  if (seconds == 0) {
+    Serial.printf("[TIMER] Rejected: zero subtract on %s\n", name);
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+    return false;
+  }
+
+  if (seconds >= timers[idx].seconds_left) {
+    // Subtracting past zero used to leave a timer that was active, not
+    // ringing and stuck at 00:00:00 - the countdown only starts an alarm when
+    // it decrements a positive value, so that slot was never released. Treat
+    // it as an ordinary expiry instead.
+    timers[idx].seconds_left = 0;
+    if (!timers[idx].ringing) {
+      timers[idx].ringing = true;
+      timers[idx].ring_start_ms = millis();
+      Serial.printf("[TIMER] %s reached zero via MINUS; alarm ringing.\n", name);
+    }
+    requestFullRedraw();
+    return true;
+  }
+
+  timers[idx].seconds_left -= seconds;
   requestFullRedraw();
-  
+
   Serial.printf("[TIMER] Subtracted %lu seconds from %s\n", (unsigned long)seconds, name);
-  
+
   #if USE_SPEAKER
   sfx_play(SFX_CONFIRM);
   #endif
-  
+
   return true;
 }
 
-static void stopAllAlarms() {
+static bool stopAllAlarms() {
+  bool stopped_any = false;
   for (int i = 0; i < MAX_TIMERS; i++) {
     if (timers[i].ringing) {
       timers[i].ringing = false;
       timers[i].active = false;  // Remove timer after stopping alarm
+      stopped_any = true;
     }
   }
   updateActiveCount();
   requestFullRedraw();
-  
-  Serial.println("[TIMER] All alarms stopped");
-  
+
   #if USE_SPEAKER
   sfx_stop();
   play_alarm_tone(false);
   #endif
+
+  if (stopped_any) {
+    Serial.println("[TIMER] All alarms stopped");
+  } else {
+    // Nothing was ringing. Say so rather than leaving the user wondering
+    // whether the command was heard at all.
+    Serial.println("[TIMER] Stop received but nothing was ringing");
+    #if USE_SPEAKER
+    sfx_play(SFX_ERROR);
+    #endif
+  }
+
+  return stopped_any;
+}
+
+// ======================= DEVICE STATE REPORTING =======================
+// Emitted after every change so the Raspberry Pi bridge can mirror real state
+// instead of inferring it from the commands it sent. Format:
+//   STATE:COUNT:2;T:Baking,REMAIN:540,TOTAL:1200;T:Break,REMAIN:60,TOTAL:300
+static void notifyTimerState() {
+  char line[192];
+  int n = snprintf(line, sizeof(line), "STATE:COUNT:%d", active_timer_count);
+
+  for (int i = 0; i < MAX_TIMERS && n > 0 && n < (int)sizeof(line); i++) {
+    if (!timers[i].active) continue;
+    n += snprintf(line + n, sizeof(line) - n, ";T:%s,REMAIN:%lu,TOTAL:%lu",
+                  timers[i].name,
+                  (unsigned long)timers[i].seconds_left,
+                  (unsigned long)timers[i].total_seconds);
+  }
+
+  line[sizeof(line) - 1] = '\0';
+  notifyDevice(line);
 }
 
 // ======================= VOICE COMMAND PROCESSING =======================
-// Moved outside USE_BLE to support both BLE and Demo modes
+// Always called from loop() - never from a BLE callback. See the command inbox.
 void processVoiceCommand(ParsedCommand& cmd) {
   if (cmd.cmd == CMD_NONE) return;
 
   wakeDisplayForCommand();
 
+  bool ok = false;
+  const char* kind = "NONE";
+
   switch (cmd.cmd) {
     case CMD_SET:
-      createTimer(cmd.name, cmd.duration);
+      kind = "SET";
+      ok = createTimer(cmd.name, cmd.duration);
       break;
     case CMD_CANCEL:
-      cancelTimer(cmd.name);
+      kind = "CANCEL";
+      ok = cancelTimer(cmd.name);
       break;
     case CMD_ADD:
-      addTimeToTimer(cmd.name, cmd.duration);
+      kind = "ADD";
+      ok = addTimeToTimer(cmd.name, cmd.duration);
       break;
     case CMD_MINUS:
-      subtractTimeFromTimer(cmd.name, cmd.duration);
+      kind = "MINUS";
+      ok = subtractTimeFromTimer(cmd.name, cmd.duration);
       break;
     case CMD_STOP:
-      stopAllAlarms();
+      kind = "STOP";
+      ok = stopAllAlarms();
       break;
     default:
-      break;
+      return;
   }
+
+  char ack[64];
+  snprintf(ack, sizeof(ack), "ACK:%s,NAME:%s,OK:%d", kind, cmd.name, ok ? 1 : 0);
+  notifyDevice(ack);
+  markStateDirty();
 }
 
 // ======================= DISPLAY HELPERS =======================
@@ -2552,7 +2780,10 @@ void setup() {
   // Initialize BLE
   NimBLEDevice::init("TimerDevice");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  
+  // Commands run to ~45 bytes. At the 23-byte default ATT MTU a
+  // write-without-response would be silently truncated, so ask for room.
+  NimBLEDevice::setMTU(247);
+
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
   
@@ -2574,9 +2805,14 @@ void setup() {
   
   NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(pService->getUUID());
+  // Flags (3 bytes) plus the 128-bit service UUID (18 bytes) leave no room for
+  // the name in the 31-byte advertisement, so it has to go in the scan
+  // response. Without this the Pi can only find us by service UUID.
+  pAdvertising->setName("TimerDevice");
+  pAdvertising->enableScanResponse(true);
   pAdvertising->start();
-  
-  Serial.println("[BOOT] BLE advertising started");
+
+  Serial.println("[BOOT] BLE advertising started as \"TimerDevice\"");
   #endif
 
   #if USE_RING
@@ -2667,10 +2903,28 @@ void loop() {
   #if USE_SPEAKER
   sfx_loop();  // Keep audio state current
   #endif
-  
+
+  // === Drain commands queued by the BLE callback ===
+  // Everything that mutates timer/display/audio state runs here, on the
+  // Arduino task, so it never races the render path.
+  {
+    char inbound[CMD_INBOX_MSG_LEN];
+    while (inbox_pop(inbound, sizeof(inbound))) {
+      std::string msg(inbound);
+      ParsedCommand cmd = parseCommand(msg);
+      if (cmd.cmd == CMD_NONE) {
+        Serial.printf("[CMD] Unrecognized: %s\n", inbound);
+        notifyDevice("ACK:NONE,NAME:,OK:0");
+        continue;
+      }
+      processVoiceCommand(cmd);
+      requestFullRedraw();
+    }
+  }
+
   // === Process demo commands if in demo mode ===
   processDemoCommands();
-  
+
   // Check if active timer count changed (need full redraw)
   static int last_active_count = 0;
   if (active_timer_count != last_active_count) {
@@ -2756,6 +3010,7 @@ void loop() {
           timers[i].active = false;
           updateActiveCount();
           layout_changed = true;
+          markStateDirty();
           #if USE_SPEAKER
           play_alarm_tone(false);
           #endif
@@ -2769,6 +3024,7 @@ void loop() {
           timers[i].ringing = true;
           timers[i].ring_start_ms = tick_now;
           Serial.printf("[TIMER] %s finished! Alarm ringing.\n", timers[i].name);
+          markStateDirty();
         }
       }
     }
@@ -2840,12 +3096,25 @@ void loop() {
   }
   #endif
   
-  // === Serial command interface for testing ===
+  // === Serial command interface ===
+  // Accepts the same wire protocol as BLE ("CMD:SET,NAME:Baking,DURATION:600"),
+  // so the Raspberry Pi bridge can run over USB serial instead of BLE, plus the
+  // shorthand forms below for hand testing over the Arduino serial monitor.
   while (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    
-    if (cmd.startsWith("set ")) {
+
+    if (cmd.startsWith("CMD:")) {
+      std::string msg(cmd.c_str());
+      ParsedCommand parsed = parseCommand(msg);
+      if (parsed.cmd == CMD_NONE) {
+        Serial.printf("[CMD] Unrecognized: %s\n", cmd.c_str());
+        notifyDevice("ACK:NONE,NAME:,OK:0");
+      } else {
+        processVoiceCommand(parsed);
+        requestFullRedraw();
+      }
+    } else if (cmd.startsWith("set ")) {
       // "set Timer 1 300" - create timer with 300 seconds
       int firstSpace = cmd.indexOf(' ', 4);
       if (firstSpace > 4) {
@@ -2860,6 +3129,7 @@ void loop() {
       requestFullRedraw();
     } else if (cmd == "stop") {
       stopAllAlarms();
+      markStateDirty();
       requestFullRedraw();
     } else if (cmd.startsWith("add ")) {
       // "add Timer 1 60"
@@ -2868,6 +3138,7 @@ void loop() {
         String name = cmd.substring(4, firstSpace);
         uint32_t duration = cmd.substring(firstSpace + 1).toInt();
         addTimeToTimer(name.c_str(), duration);
+        markStateDirty();
       }
     } else if (cmd == "status") {
       Serial.println("\n=== Timer Status ===");
@@ -2882,7 +3153,13 @@ void loop() {
       Serial.printf("Active: %d\n", active_timer_count);
     } else if (cmd == "help") {
       Serial.println("\n=== Commands ===");
-      Serial.println("  set <name> <seconds> - Create timer");
+      Serial.println("  CMD:...              - Full wire protocol, same as BLE:");
+      Serial.println("      CMD:SET,NAME:Baking,DURATION:600");
+      Serial.println("      CMD:CANCEL,NAME:Baking");
+      Serial.println("      CMD:ADD,NAME:Baking,DURATION:60");
+      Serial.println("      CMD:MINUS,NAME:Baking,DURATION:60");
+      Serial.println("      CMD:STOP");
+      Serial.println("  set <name> <seconds> - Create timer (single-word name)");
       Serial.println("  cancel <name>        - Cancel timer");
       Serial.println("  add <name> <seconds> - Add time");
       Serial.println("  stop                 - Stop all alarms");
@@ -2903,6 +3180,13 @@ void loop() {
       Serial.printf("[SFX] PWM duty=%u  PCM gain=%.2f\n", (unsigned)g_pwm_duty, g_sfx_gain);
     }
   }
-  
+
+  // === Report state changes once per loop ===
+  // Coalesced here so a burst of changes produces a single STATE line.
+  if (g_state_dirty) {
+    g_state_dirty = false;
+    notifyTimerState();
+  }
+
   delay(2);
 }
