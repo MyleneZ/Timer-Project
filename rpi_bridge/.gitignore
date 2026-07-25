@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local, machine-specific configs. config.example.toml is the tracked template.
+bridge.toml
+bridge.*.toml
+!config.example.toml

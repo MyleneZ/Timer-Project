@@ -206,7 +206,9 @@ class Segmenter:
         if not (finished or overlong):
             return None
 
-        frames = self._frames
+        # Copy before reset(): reset() clears self._frames in place, which would
+        # otherwise empty this reference too and drop every utterance.
+        frames = list(self._frames)
         self.reset()
 
         if overlong and not finished:

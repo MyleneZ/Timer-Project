@@ -49,7 +49,7 @@ USB mic ─▶ 16 kHz mono frames ─▶ VAD segmentation ─▶ Vosk (grammar-c
 
 ## Hardware
 
-* Raspberry Pi 4 (2 GB is enough; the small Vosk model needs ~200 MB RSS)
+* Raspberry Pi 4, or a **Pi Zero 2 W** — see below
 * A USB microphone. A cheap USB conference mic beats a bare electret — the
   Pi has no analog input, and mic quality dominates recognition accuracy.
 * The Pi's built-in Bluetooth (no dongle needed)
@@ -57,6 +57,30 @@ USB mic ─▶ 16 kHz mono frames ─▶ VAD segmentation ─▶ Vosk (grammar-c
 
 The Pi does **not** need a speaker or display: the Qualia still owns all audio
 and visual feedback.
+
+### Pi 4 vs Pi Zero 2 W
+
+A Zero 2 W runs this fine on the **default config** (Vosk small + grammar), and
+its size suits the enclosure better. Measured footprint of the loaded
+grammar-constrained model is **~155 MB RSS**, so 512 MB is enough on Raspberry
+Pi OS **Lite** — with the desktop image it is too tight.
+
+|  | Pi 4 | Pi Zero 2 W |
+|---|---|---|
+| CPU | Cortex-A72 @ 1.5 GHz | Cortex-A53 @ 1.0 GHz, in-order |
+| RAM | 2–8 GB | 512 MB |
+| Vosk small + grammar | comfortable | works; expect a longer decode after each utterance |
+| `backend = "whisper"` | usable (1–3 s) | **no** — too slow, and int8 `tiny.en` will not fit alongside Vosk |
+| USB mic | plug into a USB-A port | needs a **micro-USB OTG adapter**, or use an I2S MEMS mic on the GPIO header |
+| Bluetooth | 5.0 | 4.2 — fine for NUS, but it shares its antenna with Wi-Fi |
+
+Take the Zero 2 W if you want the small enclosure and stay on Vosk. Take the Pi
+4 if you want the Whisper backend as an escape hatch when Vosk is not accurate
+enough for a given speaker, or headroom to run anything else on the same board.
+
+On a Zero 2 W: use the Lite image, leave `use_grammar = true`, and keep Wi-Fi
+idle in normal operation (everything is offline anyway) so it does not contend
+with BLE for the shared radio.
 
 ---
 
@@ -202,9 +226,42 @@ before running the Pi. What changed:
 
 ```bash
 pip install pytest
-pytest                                   # 70 tests, no hardware needed
+pytest                                   # 91 tests, no hardware needed
 python -m tivvy_bridge --dry-run --say "set a baking timer for twenty minutes"
 ```
 
 `--dry-run` prints commands instead of transmitting them; `--say` skips the
 microphone and the ASR model entirely, so the parser can be exercised anywhere.
+
+### Smoke testing on a laptop
+
+Everything except the BLE link runs on macOS, so the pipeline can be proven
+before anything reaches the Pi. `sounddevice`, `vosk`, `bleak` and `webrtcvad`
+are all imported lazily, so `--say` needs no dependencies at all.
+
+```bash
+python3.12 -m venv .venv                 # 3.11–3.13; vosk has no 3.14 wheel yet
+.venv/bin/pip install -r requirements.txt
+./scripts/download_vosk_model.sh ~/tivvy-models
+cp config.example.toml bridge.mac.toml   # then point [asr] model_path at ~/tivvy-models
+                                         # and set [link] transport = "stdout"
+
+.venv/bin/python -m tivvy_bridge --config bridge.mac.toml --check
+.venv/bin/python scripts/smoke_test.py -c bridge.mac.toml
+.venv/bin/python scripts/smoke_test.py -c bridge.mac.toml --chatter
+```
+
+`scripts/smoke_test.py` synthesizes speech with macOS `say` (or `espeak-ng` on
+Linux) and pushes it through the real VAD, Vosk, NLU and link, so it exercises
+the whole chain without anyone having to talk to the laptop. `--chatter` speaks
+ordinary conversation instead and counts how much of it gets forced into a
+command — the number to watch when tuning `min_confidence` or deciding whether
+to turn the wake word on.
+
+Two macOS-specific caveats:
+
+* **BLE addresses are not MAC addresses.** CoreBluetooth hands out a per-host
+  UUID, so an address from `--scan-ble` on a Mac is meaningless in the Pi's
+  `device_address`. Pin that value from a scan run *on the Pi*.
+* The terminal needs Bluetooth permission (System Settings → Privacy &
+  Security → Bluetooth) before `--scan-ble` returns anything.
