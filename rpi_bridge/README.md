@@ -258,6 +258,35 @@ ordinary conversation instead and counts how much of it gets forced into a
 command — the number to watch when tuning `min_confidence` or deciding whether
 to turn the wake word on.
 
+### Testing with your own voice
+
+```bash
+./scripts/mic_test.py                  # print commands, no hardware needed
+./scripts/mic_test.py --list           # which input devices exist
+./scripts/mic_test.py --device "USB"   # pick one by index or name substring
+./scripts/mic_test.py --transport ble  # actually drive the Qualia
+./scripts/mic_test.py --wake           # require a wake phrase first
+```
+
+No venv activation needed — the script re-executes itself under `./.venv` if it
+is not already running there.
+
+It shows a live input-level meter while idle:
+
+```
+  [##########--------------------]  -34.2 dBFS  peak  -8.1  SPEECH
+   2.1s  conf 0.96  'set a baking timer for twenty minutes'
+          -> CMD:SET,NAME:Baking,DURATION:1200
+             timers: Baking 00:19:59
+```
+
+The meter is the point. A mic that is not working and a mic that is working but
+not recognizing you produce identical silence on stdout; the meter tells them
+apart at a glance. If the bar never moves, it is permissions or the wrong
+device, not the ASR — macOS needs your terminal listed under System Settings →
+Privacy & Security → Microphone. Rejected utterances print the reason the NLU
+gave, which is what you want when tuning phrasing.
+
 Two macOS-specific caveats:
 
 * **BLE addresses are not MAC addresses.** CoreBluetooth hands out a per-host
