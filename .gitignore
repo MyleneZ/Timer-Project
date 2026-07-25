@@ -1,3 +1,5 @@
 .DS_Store
 
 rpi_bridge/.venv/
+
+rpi_bridge/tivvy_bridge/__pycache__/

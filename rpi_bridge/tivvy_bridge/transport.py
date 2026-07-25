@@ -110,6 +110,7 @@ class BleLink(Link):
         self._connected = threading.Event()
         self._stopping = threading.Event()
         self._address: Optional[str] = cfg.device_address
+        self._maintain_task: Optional[asyncio.Task] = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -122,7 +123,13 @@ class BleLink(Link):
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, name="ble", daemon=True)
         self._thread.start()
-        asyncio.run_coroutine_threadsafe(self._maintain(), self._loop)
+        # Keep the Task handle, not just the concurrent future: close() has to be
+        # able to cancel _maintain() mid-backoff, and cancelling the future that
+        # run_coroutine_threadsafe returns does not cancel a task already running.
+        asyncio.run_coroutine_threadsafe(self._spawn_maintain(), self._loop).result(timeout=5)
+
+    async def _spawn_maintain(self) -> None:
+        self._maintain_task = asyncio.ensure_future(self._maintain())
 
     def _run_loop(self) -> None:  # pragma: no cover - thread body
         assert self._loop is not None
@@ -134,14 +141,26 @@ class BleLink(Link):
         loop = self._loop
         if loop is None:
             return
+
+        # Cancel first. _maintain() spends most of its life asleep in the
+        # reconnect backoff, where _stopping alone will not wake it, and
+        # stopping the loop out from under a live task logs "Task was destroyed
+        # but it is pending!" on every teardown where the display was absent.
+        task = self._maintain_task
+        if task is not None:
+            loop.call_soon_threadsafe(task.cancel)
+
         future = asyncio.run_coroutine_threadsafe(self._disconnect(), loop)
         try:
             future.result(timeout=5)
         except Exception:  # pragma: no cover - teardown best effort
             log.debug("BLE disconnect failed", exc_info=True)
+
         loop.call_soon_threadsafe(loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=5)
+        self._maintain_task = None
+        self._loop = None
 
     @property
     def connected(self) -> bool:
@@ -184,29 +203,35 @@ class BleLink(Link):
 
     async def _maintain(self) -> None:  # pragma: no cover - needs hardware
         backoff = self._cfg.reconnect_min_s
-        while not self._stopping.is_set():
-            try:
-                connected = await self._connect_once()
-            except Exception as exc:
-                log.warning("BLE connect attempt failed: %s", exc)
-                connected = False
+        try:
+            while not self._stopping.is_set():
+                try:
+                    connected = await self._connect_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("BLE connect attempt failed: %s", exc)
+                    connected = False
 
-            if connected:
-                backoff = self._cfg.reconnect_min_s
-                # Poll until the link drops.
-                while not self._stopping.is_set():
-                    client = self._client
-                    if client is None or not client.is_connected:
-                        break
-                    await asyncio.sleep(1.0)
-                if not self._stopping.is_set():
-                    log.warning("BLE link lost; reconnecting")
-                self._connected.clear()
-                self._client = None
-                continue
+                if connected:
+                    backoff = self._cfg.reconnect_min_s
+                    # Poll until the link drops.
+                    while not self._stopping.is_set():
+                        client = self._client
+                        if client is None or not client.is_connected:
+                            break
+                        await asyncio.sleep(1.0)
+                    if not self._stopping.is_set():
+                        log.warning("BLE link lost; reconnecting")
+                    self._connected.clear()
+                    self._client = None
+                    continue
 
-            await asyncio.sleep(backoff)
-            backoff = min(self._cfg.reconnect_max_s, backoff * 1.7)
+                await asyncio.sleep(backoff)
+                backoff = min(self._cfg.reconnect_max_s, backoff * 1.7)
+        except asyncio.CancelledError:
+            log.debug("BLE maintenance task cancelled")
+            raise
 
     async def _connect_once(self) -> bool:  # pragma: no cover - needs hardware
         from bleak import BleakClient, BleakScanner  # type: ignore
@@ -219,11 +244,16 @@ class BleLink(Link):
 
         target = self._address
         if target is None:
+            # Hand BleakClient the BLEDevice itself rather than its address.
+            # Given a bare address string bleak runs an implicit re-scan to find
+            # the peer again, which is slower and is the usual reason a connect
+            # fails on macOS, where the "address" is a per-host CoreBluetooth
+            # UUID rather than a real MAC.
             target = await self._discover(BleakScanner, scanner_kwargs)
             if target is None:
                 return False
 
-        log.info("connecting to %s", target)
+        log.info("connecting to %s", _address_of(target))
         client = BleakClient(target, timeout=self._cfg.scan_timeout_s, **client_kwargs)
         await client.connect()
 
@@ -243,17 +273,21 @@ class BleLink(Link):
                 log.debug("could not subscribe to TX notifications: %s", exc)
 
         self._client = client
-        self._address = target
+        self._address = _address_of(target)
         self._connected.set()
-        log.info("BLE link up (%s)", target)
+        log.info("BLE link up (%s)", self._address)
         return True
 
-    async def _discover(self, BleakScanner, scanner_kwargs) -> Optional[str]:  # pragma: no cover
+    async def _discover(self, BleakScanner, scanner_kwargs):  # pragma: no cover
         """Find the Qualia by name, falling back to the NUS service UUID.
 
-        The name fallback matters: NimBLE only advertises the device name when
-        it fits in the 31-byte advertisement alongside the 128-bit service UUID,
-        so name-only discovery is not guaranteed to work.
+        Returns the ``BLEDevice`` rather than its address so the caller can hand
+        it straight to ``BleakClient`` without a second scan.
+
+        The service-UUID fallback matters: NimBLE only advertises the device
+        name when it fits in the 31-byte advertisement alongside the 128-bit
+        service UUID, so name-only discovery is not guaranteed to work. The
+        firmware puts the name in the scan response for exactly this reason.
         """
         log.info("scanning for %r (%.0fs)", self._cfg.device_name, self._cfg.scan_timeout_s)
         devices = await BleakScanner.discover(
@@ -267,13 +301,13 @@ class BleLink(Link):
         for device, adv in devices.values():
             name = (adv.local_name or device.name or "").lower()
             if wanted_name and name == wanted_name:
-                return device.address
+                return device
             uuids = [u.lower() for u in (adv.service_uuids or [])]
             if NUS_SERVICE_UUID in uuids and by_uuid is None:
-                by_uuid = device.address
+                by_uuid = device
 
         if by_uuid is not None:
-            log.info("matched the Qualia by NUS service UUID at %s", by_uuid)
+            log.info("matched the Qualia by NUS service UUID at %s", by_uuid.address)
             return by_uuid
 
         log.warning("no Tivvy display found in scan results")
@@ -292,6 +326,11 @@ class BleLink(Link):
                 self._on_notify(text)
             except Exception:
                 log.debug("notification handler raised", exc_info=True)
+
+
+def _address_of(target) -> str:
+    """Address string for a BLEDevice or a value that is already an address."""
+    return getattr(target, "address", None) or str(target)
 
 
 def _has_characteristic(client, uuid: str) -> bool:  # pragma: no cover - needs hardware

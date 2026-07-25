@@ -258,6 +258,39 @@ ordinary conversation instead and counts how much of it gets forced into a
 command — the number to watch when tuning `min_confidence` or deciding whether
 to turn the wake word on.
 
+### Driving the display without a microphone
+
+`scripts/send_command.py` sends the wire protocol straight to the Qualia and
+prints the `ACK:` / `STATE:` notifications that come back, so you can see what
+the firmware did with each command instead of guessing from across the room.
+This is the fastest way to separate a firmware problem from a voice problem.
+
+```bash
+./scripts/send_command.py --demo                    # scripted bring-up run
+./scripts/send_command.py                           # interactive prompt
+./scripts/send_command.py "CMD:SET,NAME:Baking,DURATION:120"
+./scripts/send_command.py --say "set a baking timer for two minutes"
+./scripts/send_command.py --listen 10               # just watch notifications
+./scripts/send_command.py --transport stdout --demo # rehearse with no hardware
+```
+
+The interactive prompt takes either form:
+
+```
+tivvy> set a baking timer for two minutes
+   -> CMD:SET,NAME:Baking,DURATION:120
+      <- ACK:SET,NAME:Baking,OK:1
+      <- timers: Baking 02:00
+```
+
+`--demo` is a conformance run, not just a sequence of commands: it deliberately
+asks for a fourth timer when `MAX_TIMERS` is 3, subtracts past zero, reuses a
+name, cancels something that does not exist, and sends a lowercase name to
+confirm `findTimerByName` is case-insensitive. Each step declares whether the
+firmware is expected to accept or refuse it and reports a **MISMATCH** if the
+`ACK:` disagrees, so a firmware regression shows up as a failed step rather than
+as odd behaviour weeks later.
+
 ### Testing with your own voice
 
 ```bash
